@@ -438,10 +438,15 @@ StockState:
   - 각 StockAgent의 결과(status, quality_score) 수집
   - stock_results 리스트 구성
   - failed_stocks 식별
+  - report_type="comparison" 일 때 추가 처리:
+      stock_results 전체를 comparison 템플릿에 주입
+      → LLM 호출로 비교 보고서(comparison_draft) 생성
+      → SupervisorState.comparison_draft 저장
   ↓
 [output_node]
   - OutputAgent 서브그래프 실행
   - 성공한 종목들의 보고서 파일 생성
+  - report_type="comparison" 일 때 비교 보고서 추가 생성
   ↓
 ⛔ [hitl_final_node]  : HITL-3 — 전체 최종 승인 (4시간 타임아웃)
   - 생성된 전체 보고서 목록 알림 발송
@@ -511,14 +516,27 @@ StockState:
 역할: 전 종목 분석 완료 후 보고서 파일 일괄 생성
 
 노드 구성:
-  [collect_drafts_node]  : stock_results에서 완료 종목 draft 수집
-  [markdown_node]        : markdown_writer.py 호출 (종목별)
-  [pdf_node]             : pdf_exporter.py 호출 (종목별)
-  [ppt_node]             : ppt_builder.py 호출 (종목별)
-  [summary_node]         : 전체 실행 결과 요약 생성
+  [collect_drafts_node]   : stock_results에서 완료 종목 draft 수집
+  [markdown_node]         : markdown_writer.py 호출 (종목별, report_type 반영)
+  [pdf_node]              : pdf_exporter.py 호출 (종목별)
+  [ppt_node]              : ppt_builder.py 호출 (종목별, report_type별 슬라이드 구성)
+  [comparison_node]       : report_type="comparison" 시에만 실행
+                             comparison_draft → 비교 MD/PPT 생성
+                             출력: reports/YYYY-MM-DD/comparison_{종목A}_{종목B}_...md
+  [summary_node]          : 전체 실행 결과 요약 생성
 
 병렬 처리:
   - 종목별 파일 생성을 내부적으로 병렬 실행 가능 (Send() 재활용)
+  - comparison_node는 모든 종목별 파일 완료 후 실행
+
+비교 보고서 섹션 구성 (comparison 템플릿):
+  1. 비교 대상 종목 개요 표
+  2. 밸류에이션 비교 (PER / PBR / EV-EBITDA)
+  3. 수익성·성장성 비교 (영업이익률 / ROE / 매출 YoY)
+  4. 주가 흐름 비교 (3·6·12개월 수익률)
+  5. 애널리스트 컨센서스 비교 (목표주가 / 투자의견 분포)
+  6. 리스크 비교 (부채비율 / 이자보상배율)
+  7. 종합 의견 (LLM — 어떤 종목이 현 시점에서 우위인가)
 ```
 
 ---

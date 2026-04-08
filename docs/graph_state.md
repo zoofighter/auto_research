@@ -51,6 +51,7 @@ SupervisorState          ← Supervisor 그래프 전체 공유
 | `collection_done` | bool | False | CollectionAgent 완료 여부 |
 | `stock_results` | list[dict] | [] | StockAgent 결과 누적 |
 | `failed_stocks` | list[str] | [] | 실패한 종목 코드 목록 |
+| `comparison_draft` | str\|None | None | report_type="comparison" 시 집계 비교 보고서 |
 | `final_approved` | bool | False | HITL-3 최종 승인 여부 |
 
 ### report_type 값 정의
@@ -93,6 +94,8 @@ collection_node (CollectionAgent 완료 후)
 aggregate_node (모든 StockAgent 완료 후)
   → stock_results = [{...}, {...}, ...]
   → failed_stocks = ["000660"]  (실패 종목만)
+  → report_type = "comparison" 일 때:
+       comparison_draft = LLM이 stock_results 전체를 병합해 비교 보고서 생성
 
 hitl_final_node
   → final_approved = True (approve 시)
