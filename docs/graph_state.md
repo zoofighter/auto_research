@@ -46,11 +46,26 @@ SupervisorState          ← Supervisor 그래프 전체 공유
 |------|------|--------|------|
 | `date` | str | 오늘 날짜 | 실행 기준일 (YYYY-MM-DD) |
 | `hitl_mode` | str | config값 | FULL-AUTO / SEMI-AUTO / FULL-REVIEW |
+| `report_type` | str | "full_analysis" | 보고서 양식 (아래 참조) |
 | `watchlist` | list[str] | DB 조회 | 분석 대상 stock_code 목록 |
 | `collection_done` | bool | False | CollectionAgent 완료 여부 |
 | `stock_results` | list[dict] | [] | StockAgent 결과 누적 |
 | `failed_stocks` | list[str] | [] | 실패한 종목 코드 목록 |
 | `final_approved` | bool | False | HITL-3 최종 승인 여부 |
+
+### report_type 값 정의
+
+| 값 | 설명 | 주요 섹션 |
+|----|------|-----------|
+| `full_analysis` | 심층 분석 (기본값) | Executive Summary + 전체 섹션 + 출처 |
+| `daily_brief` | 일일 브리프 | 변화 요약 3줄 + 주요 이벤트 + 액션 포인트 |
+| `risk_focus` | 리스크 집중 | 리스크 항목 추출·등급화 (단기/중장기) |
+| `comparison` | 비교 분석 | 복수 종목 나란히 비교 (watchlist 전체) |
+| `earnings` | 실적 시즌 | 컨센서스 vs 실제 실적 차이 중심 |
+| `event_brief` | 공시 긴급 | 주요 공시 1건 집중 해석 |
+
+`report_type`은 `init_node`에서 설정되며, `SupervisorState` → `StockState`로 주입된다.  
+`synthesize_node`가 이 값을 읽어 해당 프롬프트 템플릿을 선택한다.
 
 ### stock_results 항목 구조
 
@@ -98,6 +113,7 @@ hitl_final_node
 | `stock_code` | str | Supervisor 주입 | 종목코드 (예: 005930) |
 | `company_name` | str | Supervisor 주입 | 회사명 |
 | `session_id` | int | None → DB 생성 | analysis_sessions.id |
+| `report_type` | str | Supervisor 주입 | 보고서 양식 (SupervisorState에서 전달) |
 
 ### 4-2. 분석 데이터 필드
 

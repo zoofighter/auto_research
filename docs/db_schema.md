@@ -262,6 +262,7 @@
 | stock_id | INTEGER | FK→stocks, NOT NULL | |
 | session_id | INTEGER | FK→analysis_sessions, NOT NULL | |
 | report_date | DATE | NOT NULL | 보고서 기준일 |
+| report_type | VARCHAR(30) | NOT NULL, DEFAULT 'full_analysis' | full_analysis / daily_brief / risk_focus / comparison / earnings / event_brief |
 | executive_summary | TEXT | | Executive Summary (3줄) |
 | report_md_path | VARCHAR(500) | | Markdown 파일 경로 |
 | report_pdf_path | VARCHAR(500) | | PDF 파일 경로 |
@@ -269,7 +270,7 @@
 | quality_score | FLOAT | | LLM 자체 평가 0.0~1.0 |
 | created_at | DATETIME | DEFAULT now() | |
 
-**인덱스:** stock_id, report_date
+**인덱스:** stock_id, report_date, report_type
 
 ---
 

@@ -77,9 +77,16 @@ a_0408_report/
 │   └── notifier.py              # HITL 알림 발송 (Telegram / CLI)
 │
 ├── reporters/                   # Phase 5 — 보고서 생성
-│   ├── markdown_writer.py       # 분석 보고서 Markdown 생성
+│   ├── templates/               # 양식별 프롬프트·섹션 정의
+│   │   ├── full_analysis.py     # 심층 분석 (기본)
+│   │   ├── daily_brief.py       # 일일 브리프
+│   │   ├── risk_focus.py        # 리스크 집중
+│   │   ├── comparison.py        # 비교 분석
+│   │   ├── earnings.py          # 실적 시즌
+│   │   └── event_brief.py       # 공시 긴급
+│   ├── markdown_writer.py       # report_type별 Markdown 생성
 │   ├── pdf_exporter.py          # Markdown → PDF 변환
-│   └── ppt_builder.py           # PowerPoint 생성
+│   └── ppt_builder.py           # report_type별 PPT 생성
 │
 ├── scheduler/                   # Phase 6 — 자동화
 │   └── daily_runner.py          # 일별 전체 파이프라인 실행
@@ -603,19 +610,57 @@ HITL 병렬성 주의:
 임계값 0.7 미달 시 루프 재진입
 ```
 
+**synthesize_node (보고서 초안 생성)**
+```
+입력: collected_docs + analysis_notes + search_results + report_type
+처리:
+  1. TEMPLATES[report_type] 에서 프롬프트 템플릿 선택
+  2. LLM 호출 → report_draft (Markdown) 생성
+
+TEMPLATES 목록:
+  full_analysis : Executive Summary + 전체 섹션 (7개) + 출처
+  daily_brief   : 변화 요약 3줄 + 주요 이벤트 + 액션 포인트
+  risk_focus    : 리스크 항목 추출·등급화 (단기/중기/장기)
+  comparison    : 복수 종목 항목별 나란히 비교 표
+  earnings      : 컨센서스 vs 실제 실적 차이 + 가이던스 변화
+  event_brief   : 공시 1건 해석 + 주가 영향 + 유사 선례
+
+출력: report_draft (Markdown, 양식별 구조 상이)
+```
+
 ---
 
 ### Phase 5: 보고서 생성기
 
-**목표:** LangGraph 최종 draft를 형식화된 Report(MD/PDF) + PPT로 변환
+**목표:** LangGraph 최종 draft를 report_type별 형식화된 파일로 변환
+
+#### 5-0. `reporters/templates/` — 양식별 섹션 정의
+
+```
+reporters/
+  templates/
+    full_analysis.py   # 7섹션 심층 분석 (기존)
+    daily_brief.py     # 3줄 요약 + 이벤트
+    risk_focus.py      # 리스크 등급 테이블
+    comparison.py      # 종목 비교 표
+    earnings.py        # 실적 시즌 양식
+    event_brief.py     # 공시 긴급 양식
+
+각 템플릿 파일:
+  PROMPT_TEMPLATE  : synthesize_node에서 사용하는 LLM 프롬프트
+  MD_SECTIONS      : markdown_writer가 렌더링할 섹션 순서
+  PPT_SLIDES       : ppt_builder가 사용할 슬라이드 구성
+```
 
 #### 5-1. `reporters/markdown_writer.py`
 
 ```
-입력: report_draft (LangGraph 출력), session_id, stock_code
-출력: reports/YYYY-MM-DD/{stock_code}_report.md
+입력: report_draft (LangGraph 출력), session_id, stock_code, report_type
+출력: reports/YYYY-MM-DD/{stock_code}_{report_type}.md
 
-문서 구조 (요건정의서 기준):
+문서 구조: templates/{report_type}.MD_SECTIONS 에 따라 동적 결정
+
+full_analysis 기준 (기존):
   1. Executive Summary
   2. 기업 개요
   3. 재무 분석 (financial_metrics 테이블 데이터 삽입)
