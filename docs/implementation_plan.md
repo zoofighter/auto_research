@@ -1,7 +1,7 @@
 # 구현 상세 계획 및 전략
 
 **작성일:** 2026-04-08  
-**버전:** 1.1 (HITL 추가)
+**버전:** 1.2 (멀티 에이전트 전환)
 
 ---
 
@@ -13,6 +13,7 @@
 - **로컬 우선:** 외부 API 의존 최소화, 로컬 LLM(Qwen)과 로컬 DB 중심 설계
 - **모듈 독립성:** 각 수집기가 독립 실행 가능하게 설계하여 장애 격리
 - **Human in the Loop:** 자동화 효율성은 유지하면서 질문 검토·초안 편집·최종 승인 3개 지점에 사람 개입 허용
+- **멀티 에이전트:** Supervisor가 종목별 StockAgent를 병렬 실행하여 분석 처리량 확대
 
 ### 구현 단계 개요
 
@@ -20,7 +21,7 @@
 Phase 1: 기반 인프라        (DB + 설정 + 공통 유틸)
 Phase 2: 데이터 수집기      (5개 소스별 수집 모듈)
 Phase 3: RAG 파이프라인     (ChromaDB 색인 + 검색)
-Phase 4: LangGraph 에이전트 (워크플로우 + 자율 질문 + HITL)
+Phase 4: LangGraph 멀티 에이전트 (Supervisor + 병렬 StockAgent + HITL)
 Phase 5: 보고서 생성기      (Report MD/PDF + PPT)
 Phase 6: 스케줄러           (일괄 자동화)
 ```
@@ -58,15 +59,20 @@ a_0408_report/
 │   ├── indexer.py               # SQLite → ChromaDB 색인 파이프라인
 │   └── retriever.py             # RAG 검색 인터페이스 (LangChain 연동)
 │
-├── agents/                      # Phase 4 — LangGraph 워크플로우
-│   ├── graph.py                 # LangGraph 상태 그래프 정의
+├── agents/                      # Phase 4 — LangGraph 멀티 에이전트
+│   ├── supervisor.py            # Supervisor 그래프 (최상위 오케스트레이터)
+│   ├── collection_agent.py      # CollectionAgent 서브그래프 (수집·색인 전담)
+│   ├── stock_agent.py           # StockAnalysisAgent 서브그래프 (종목별 병렬 실행)
+│   ├── output_agent.py          # OutputAgent 서브그래프 (보고서 생성 전담)
 │   ├── nodes/
 │   │   ├── analyst.py           # 문서 분석 노드
 │   │   ├── questioner.py        # 자율 질문 생성 노드
 │   │   ├── searcher.py          # 웹 검색 실행 노드
 │   │   ├── evaluator.py         # 품질 평가 및 루프 판단 노드
-│   │   └── hitl.py              # HITL interrupt 노드 (질문검토·초안검토·최종승인·재작성지시)
-│   ├── state.py                 # LangGraph 상태 스키마
+│   │   └── hitl.py              # HITL interrupt 노드
+│   ├── state/
+│   │   ├── supervisor_state.py  # Supervisor 레벨 상태 (전체 진행 현황)
+│   │   └── stock_state.py       # StockAgent 레벨 상태 (종목별 분석 상태)
 │   └── notifier.py              # HITL 알림 발송 (Telegram / CLI)
 │
 ├── reporters/                   # Phase 5 — 보고서 생성
@@ -306,112 +312,222 @@ LangChain MultiVectorRetriever 패턴 적용
 
 ---
 
-### Phase 4: LangGraph 에이전트
+### Phase 4: LangGraph 멀티 에이전트
 
-**목표:** 자율 분석 워크플로우 구현 — 분석 → 질문 생성 → 검색 → 재분석 → 평가 루프
+**목표:** Supervisor가 CollectionAgent → 병렬 StockAnalysisAgent(N) → OutputAgent 순서로 오케스트레이션. 종목별 분석을 동시 실행하여 처리 시간 단축.
 
-#### 4-1. `agents/state.py` — 상태 스키마
+---
+
+#### 멀티 에이전트 구조 개요
 
 ```
-LangGraph State 구성:
+SupervisorAgent  (agents/supervisor.py)
+  │
+  ├── CollectionAgent  (agents/collection_agent.py)
+  │     역할: 전체 데이터 수집 + ChromaDB 색인 (1회 실행)
+  │     완료 후 Supervisor에게 제어권 반환
+  │
+  ├── StockAnalysisAgent × N  (agents/stock_agent.py)
+  │     역할: 종목별 심층 분석 (Send() API로 병렬 실행)
+  │     각 인스턴스가 독립된 state 보유
+  │     HITL-1, HITL-2, HITL-4 처리
+  │
+  └── OutputAgent  (agents/output_agent.py)
+        역할: 전 종목 보고서 파일 생성 + HITL-3 최종 승인
+        모든 StockAgent 완료 후 실행
+```
+
+**LangGraph 핵심 기능 활용:**
+- `Send()` API: 종목 리스트를 순회하며 StockAgent를 병렬 디스패치
+- 서브그래프(Subgraph): 각 Agent를 독립 StateGraph로 정의
+- `Command`: Agent 간 동적 라우팅
+
+---
+
+#### 4-1. 상태 스키마
+
+**`agents/state/supervisor_state.py` — Supervisor 레벨**
+
+```
+SupervisorState:
+  - date: str                          # 실행 날짜
+  - hitl_mode: str                     # FULL-AUTO / SEMI-AUTO / FULL-REVIEW
+  - watchlist: list[str]               # 분석 대상 stock_code 목록
+  - collection_done: bool              # CollectionAgent 완료 여부
+  - stock_results: list[dict]          # 각 StockAgent 결과 집계
+      {stock_code, status, quality_score, report_paths}
+  - failed_stocks: list[str]           # 실패 종목 목록
+  - final_approved: bool               # OutputAgent 최종 승인 여부
+```
+
+**`agents/state/stock_state.py` — StockAgent 레벨**
+
+```
+StockState:
   - stock_code: str
   - company_name: str
-  - session_id: int               # analysis_sessions FK
-  - collected_docs: list[dict]    # RAG 검색 결과 누적
-  - analysis_notes: str           # 중간 분석 메모
+  - session_id: int
+  - collected_docs: list[dict]
+  - analysis_notes: str
   - generated_questions: list[str]
   - search_results: list[dict]
   - report_draft: str
   - quality_score: float
   - iteration: int
-  - status: str                   # running / completed / failed
+  - status: str                        # running / completed / failed / skipped
 
-  [HITL 추가 필드]
-  - hitl_mode: str                # FULL-AUTO / SEMI-AUTO / FULL-REVIEW
-  - human_q_feedback: dict|None   # 질문 검토 피드백 (action, revised_questions)
-  - human_draft_feedback: dict|None  # 초안 검토 피드백 (action, revised_draft, guide)
-  - rewrite_guide: str|None       # HITL-4 재작성 방향 가이드
-  - force_approved: bool          # 품질 미달 강제 승인 여부
+  [HITL 필드]
+  - hitl_mode: str
+  - human_q_feedback: dict|None
+  - human_draft_feedback: dict|None
+  - rewrite_guide: str|None
+  - force_approved: bool
 ```
 
-#### 4-2. `agents/graph.py` — LangGraph 워크플로우
+---
+
+#### 4-2. `agents/supervisor.py` — Supervisor 그래프
 
 ```
-노드 구성 및 실행 순서 (HITL 포함):
+노드 구성:
 
 [START]
   ↓
-[collect_node]       : RAG로 초기 문서 수집
+[init_node]
+  - 실행 날짜, HITL 모드, watchlist 로드
+  - SupervisorState 초기화
   ↓
-[analyze_node]       : 수집 문서 종합 → analysis_notes 생성
+[collection_node]
+  - CollectionAgent 서브그래프 실행 (동기)
+  - 완료 시 collection_done = true
   ↓
-[question_node]      : 분석 공백 탐지 → 자율 질문 3~5개 생성
+[dispatch_node]  ← Send() API 핵심 지점
+  - watchlist 순회
+  - 각 stock_code에 대해 Send("stock_agent", StockState) 호출
+  - N개 StockAgent 병렬 실행 시작
   ↓
-⛔ [hitl_q_node]     : HITL-1 — 질문 검토 (30분 타임아웃)
-    approve  → 원래 질문 유지
-    edit     → 수정된 질문으로 교체
-    add      → 질문 추가
-    skip     → 해당 종목 분석 중단 → [END]
+[aggregate_node]  ← 모든 StockAgent 완료 후 자동 실행
+  - 각 StockAgent의 결과(status, quality_score) 수집
+  - stock_results 리스트 구성
+  - failed_stocks 식별
   ↓
-[search_node]        : 질문별 웹 검색 → web_search_results 적재
+[output_node]
+  - OutputAgent 서브그래프 실행
+  - 성공한 종목들의 보고서 파일 생성
   ↓
-[synthesize_node]    : 전체 문서 통합 → report_draft 작성
+⛔ [hitl_final_node]  : HITL-3 — 전체 최종 승인 (4시간 타임아웃)
+  - 생성된 전체 보고서 목록 알림 발송
+  - approve / reject 입력 대기
   ↓
-⛔ [hitl_draft_node] : HITL-2 — 초안 검토 (2시간 타임아웃)
-    approve  → evaluate_node로 진행
-    edit     → 수정된 초안으로 교체 후 진행
-    rewrite  → rewrite_guide 저장 후 question_node 재진입
+[END]
+```
+
+---
+
+#### 4-3. `agents/collection_agent.py` — CollectionAgent 서브그래프
+
+```
+역할: 기존 Phase 2 수집기들을 에이전트화
+
+노드 구성:
+  [naver_report_node]   → naver_report.py 실행
+  [dart_node]           → dart_api.py 실행
+  [financial_node]      → naver_financial.py 실행
+  [news_node]           → news_collector.py 실행
+  [indexer_node]        → indexer.py 실행 (ChromaDB 신규 색인)
+
+특징:
+  - 노드 간 순차 실행 (의존 관계 있음)
+  - 개별 노드 실패 시 에러 기록 후 다음 노드 계속 진행
+  - 완료 시 Supervisor에게 collection_done=true 반환
+```
+
+---
+
+#### 4-4. `agents/stock_agent.py` — StockAnalysisAgent 서브그래프
+
+```
+역할: 단일 종목 심층 분석 (병렬 N개 동시 실행)
+
+노드 구성 (HITL 포함):
+
+[analyze_node]         : RAG 수집 + 문서 분석 → analysis_notes
   ↓
-[evaluate_node]      : 보고서 품질 평가 → quality_score 산정
+[question_node]        : 자율 질문 3~5개 생성
+  ↓
+⛔ [hitl_q_node]       : HITL-1 — 질문 검토 (30분 타임아웃)
+  ↓
+[search_node]          : 웹 검색 실행 → web_search_results 적재
+  ↓
+[synthesize_node]      : 전체 문서 통합 → report_draft 작성
+  ↓
+⛔ [hitl_draft_node]   : HITL-2 — 초안 검토 (2시간 타임아웃)
+  ↓
+[evaluate_node]        : quality_score 산정
   ↓
 [조건 분기]
-  quality_score >= 0.7 or force_approved
-    → ⛔ [hitl_final_node] : HITL-3 — 최종 승인 (4시간 타임아웃)
-         approve → [output_node] → [END]
-         reject  → [hitl_draft_node] 재진입
-  quality_score < 0.7 and iteration < 3
-    → ⛔ [hitl_guide_node] : HITL-4 — 재작성 지시 (1시간 타임아웃)
-         guide입력 or timeout → iteration++ → [question_node] (루프)
-         force_approve → [output_node] → [END]
+  통과 → [complete_node] → Supervisor에 결과 반환
+  미달 → ⛔ [hitl_guide_node] → iteration++ → [question_node] (루프)
 
-HITL_MODE = FULL-AUTO : 모든 interrupt 노드 스킵 (자동 approve)
-HITL_MODE = SEMI-AUTO : HITL-1, HITL-2만 활성화
-HITL_MODE = FULL-REVIEW : 모든 interrupt 노드 활성화, 타임아웃 없음
-
-조건 분기 구현: LangGraph의 conditional_edges + interrupt()
+병렬 실행 격리:
+  - 각 StockAgent 인스턴스는 독립된 StockState 보유
+  - 한 종목 실패가 다른 종목에 영향 없음
+  - 각자 독립적으로 analysis_sessions 레코드 생성
 ```
 
-#### 4-3a. `agents/nodes/hitl.py` — HITL 노드 상세
+---
+
+#### 4-5. `agents/output_agent.py` — OutputAgent 서브그래프
 
 ```
-hitl_q_node (HITL-1):
-  1. Telegram / CLI로 생성된 질문 목록 발송
-  2. interrupt() 호출 → 그래프 일시 중단
-  3. 사람 입력 수신: {action, revised_questions}
-  4. state.generated_questions 업데이트
-  5. hitl_feedbacks 테이블 INSERT
+역할: 전 종목 분석 완료 후 보고서 파일 일괄 생성
 
-hitl_draft_node (HITL-2):
-  1. Telegram / CLI로 보고서 초안 요약 발송 (링크 포함)
-  2. interrupt() 호출
-  3. 사람 입력 수신: {action, revised_draft or guide}
-  4. action='rewrite' 시 state.rewrite_guide 저장 → question_node 복귀
-  5. hitl_feedbacks INSERT
+노드 구성:
+  [collect_drafts_node]  : stock_results에서 완료 종목 draft 수집
+  [markdown_node]        : markdown_writer.py 호출 (종목별)
+  [pdf_node]             : pdf_exporter.py 호출 (종목별)
+  [ppt_node]             : ppt_builder.py 호출 (종목별)
+  [summary_node]         : 전체 실행 결과 요약 생성
 
-hitl_final_node (HITL-3):
-  1. 최종 승인 요청 알림 발송
-  2. interrupt() 호출
-  3. 사람 입력: approve / reject
+병렬 처리:
+  - 종목별 파일 생성을 내부적으로 병렬 실행 가능 (Send() 재활용)
+```
+
+---
+
+#### 4-6. `agents/nodes/hitl.py` — HITL 노드 상세
+
+```
+hitl_q_node (HITL-1) — StockAgent 내:
+  1. Telegram / CLI로 질문 목록 발송 (종목명 포함)
+  2. interrupt() → StockAgent 일시 중단
+     (다른 종목의 StockAgent는 계속 실행 중)
+  3. 사람 입력 수신 후 state 업데이트
   4. hitl_feedbacks INSERT
 
-hitl_guide_node (HITL-4):
-  1. 품질 미달 알림 + 현재 quality_score 발송
-  2. interrupt() 호출 (타임아웃: 1시간)
-  3. 사람 입력: guide 텍스트 or force_approve or 중단
-  4. hitl_feedbacks INSERT
+hitl_draft_node (HITL-2) — StockAgent 내:
+  1. 초안 요약 + 링크 발송
+  2. interrupt() → StockAgent 일시 중단
+  3. approve / edit / rewrite 처리
+
+hitl_guide_node (HITL-4) — StockAgent 내:
+  1. 품질 미달 알림 발송
+  2. interrupt() → 1시간 타임아웃
+
+hitl_final_node (HITL-3) — Supervisor 내:
+  1. 전체 완료 보고서 목록 발송
+  2. interrupt() → Supervisor 일시 중단
+  3. approve / reject 처리
+
+HITL 병렬성 주의:
+  - HITL-1, HITL-2는 종목별로 독립 interrupt 발생
+  - 10개 종목이면 최대 10개 동시 interrupt 발생 가능
+  - SEMI-AUTO 권장: 검토 부담 줄이기 위해 중요 종목만 FULL-REVIEW 지정
 ```
 
-#### 4-3. 각 노드 상세 로직
+---
+
+#### 4-7. 각 노드 상세 로직
 
 **analyze_node (문서 분석)**
 ```
@@ -632,15 +748,25 @@ Step 5. 로그 기록
 - [ ] `retriever.py` 검색 결과에 출처 메타데이터 포함 확인
 
 ### Phase 4 완료 기준
-- [ ] LangGraph 그래프 단일 종목으로 end-to-end 실행 확인
+
+**싱글 에이전트 기반 검증 (먼저):**
+- [ ] CollectionAgent 단독 실행 → 4개 수집기 순차 완료 확인
+- [ ] StockAgent 단일 종목으로 end-to-end 실행 확인
 - [ ] `analysis_sessions` 테이블에 세션 기록 확인
-- [ ] `web_search_results` 테이블에 검색 결과 적재 확인
 - [ ] quality_score < 0.7 시 루프 재진입 동작 확인
 - [ ] iteration >= 3 시 강제 종료 동작 확인
-- [ ] HITL-1 질문 수정 피드백이 state.generated_questions에 반영 확인
-- [ ] HITL-2 rewrite 피드백이 question_node 재진입으로 이어지는지 확인
+
+**멀티 에이전트 병렬 검증:**
+- [ ] Supervisor가 Send()로 3개 StockAgent 병렬 디스패치 확인
+- [ ] 종목 A 실패 시 종목 B, C는 계속 실행 (격리) 확인
+- [ ] aggregate_node에서 전 종목 결과 수집 확인
+- [ ] OutputAgent가 완료 종목만 보고서 생성 확인
+
+**HITL 검증:**
+- [ ] HITL-1 질문 수정 피드백이 StockState에 반영 확인
+- [ ] HITL-2 rewrite 시 해당 StockAgent만 루프 재진입, 타 종목 영향 없음 확인
 - [ ] FULL-AUTO 모드에서 interrupt 없이 end-to-end 완주 확인
-- [ ] `hitl_feedbacks` 테이블에 각 HITL 지점 기록 확인
+- [ ] `hitl_feedbacks` 테이블에 종목별 HITL 이력 기록 확인
 - [ ] 타임아웃 초과 시 자동 진행 동작 확인
 
 ### Phase 5 완료 기준

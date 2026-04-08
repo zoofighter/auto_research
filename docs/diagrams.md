@@ -1,52 +1,49 @@
 # 시스템 다이어그램
 
 **작성일:** 2026-04-08  
-**버전:** 1.1 (HITL 추가)
+**버전:** 1.2 (멀티 에이전트 전환)
 
 ---
 
-## 1. 전체 시스템 아키텍처
+## 1. 전체 시스템 아키텍처 (멀티 에이전트)
 
 ```mermaid
 graph TB
     subgraph Sources["📥 데이터 소스"]
         S1[네이버 금융\n리포트 PDF]
-        S2[DART\nOpen API]
+        S2[DART Open API]
         S3[네이버 주식\n재무 지표]
         S4[네이버 뉴스]
     end
 
-    subgraph Collectors["🔄 Phase 2: 수집기 (collectors/)"]
-        C1[naver_report.py]
-        C2[dart_api.py]
-        C3[naver_financial.py]
-        C4[news_collector.py]
-    end
-
-    subgraph PrimaryDB["🗄️ Primary DB (SQLite)"]
-        DB1[(analyst_reports)]
-        DB2[(dart_disclosures)]
-        DB3[(financial_metrics)]
-        DB4[(news_articles)]
-        DB5[(analysis_sessions)]
-        DB6[(generated_reports)]
-    end
-
-    subgraph RAG["🔍 Phase 3: RAG 파이프라인 (vector_db/)"]
-        R1[indexer.py\nPDF 청크 분할]
-        R2[(ChromaDB\n4개 컬렉션)]
-        R3[retriever.py\n유사도 검색]
-    end
-
-    subgraph Agent["🤖 Phase 4: LangGraph 에이전트 (agents/)"]
-        A1[graph.py\n워크플로우 실행]
+    subgraph Infra["🗄️ 공유 인프라"]
+        DB[(SQLite\n11개 테이블)]
+        VDB[(ChromaDB\n4개 컬렉션)]
         LLM[🦙 Qwen\nOllama 로컬]
     end
 
-    subgraph Output["📄 Phase 5: 보고서 생성 (reporters/)"]
-        O1[markdown_writer.py]
-        O2[pdf_exporter.py]
-        O3[ppt_builder.py]
+    subgraph Supervisor["🎯 SupervisorAgent (supervisor.py)"]
+        SUP[Supervisor\nGraph]
+    end
+
+    subgraph ColAgent["🔄 CollectionAgent (collection_agent.py)"]
+        CA1[naver_report_node]
+        CA2[dart_node]
+        CA3[financial_node]
+        CA4[news_node]
+        CA5[indexer_node]
+    end
+
+    subgraph StockAgents["🤖 StockAnalysisAgent × N (stock_agent.py)\n병렬 실행 — Send() API"]
+        SA1["StockAgent\n종목 1"]
+        SA2["StockAgent\n종목 2"]
+        SA3["StockAgent\n종목 N"]
+    end
+
+    subgraph OutAgent["📄 OutputAgent (output_agent.py)"]
+        OA1[markdown_node]
+        OA2[pdf_node]
+        OA3[ppt_node]
     end
 
     subgraph Final["📦 최종 출력물"]
@@ -55,34 +52,20 @@ graph TB
         F3[📊 Report.pptx]
     end
 
-    S1 --> C1
-    S2 --> C2
-    S3 --> C3
-    S4 --> C4
+    S1 & S2 & S3 & S4 --> ColAgent
+    ColAgent --> DB
+    ColAgent --> VDB
 
-    C1 --> DB1
-    C2 --> DB2
-    C3 --> DB3
-    C4 --> DB4
+    SUP --> ColAgent
+    SUP -- "Send() ×N" --> StockAgents
+    SUP --> OutAgent
 
-    DB1 --> R1
-    DB2 --> R1
-    DB4 --> R1
-    R1 --> R2
-    R2 --> R3
+    StockAgents <--> LLM
+    StockAgents <--> VDB
+    StockAgents <--> DB
 
-    R3 --> A1
-    DB3 --> A1
-    A1 <--> LLM
-    A1 --> DB5
-
-    DB5 --> O1
-    DB3 --> O1
-    O1 --> F1
-    O1 --> O2
-    O1 --> O3
-    O2 --> F2
-    O3 --> F3
+    OutAgent --> DB
+    OutAgent --> F1 & F2 & F3
 ```
 
 ---
@@ -258,15 +241,61 @@ erDiagram
 
 ---
 
-## 4. LangGraph 워크플로우 — 전체 상태 그래프 (HITL 포함)
+## 4. Supervisor 오케스트레이션 — 멀티 에이전트 흐름
+
+```mermaid
+flowchart TD
+    START([▶ START]) --> INIT
+
+    INIT["🔧 init_node\n날짜·HITL 모드·watchlist 초기화"]
+    INIT --> COLLECT
+
+    subgraph COLLECT["🔄 CollectionAgent (순차)"]
+        direction LR
+        CA1[naver_report] --> CA2[dart]
+        CA2 --> CA3[financial]
+        CA3 --> CA4[news]
+        CA4 --> CA5[indexer]
+    end
+
+    COLLECT --> DISPATCH["📤 dispatch_node\nSend() × watchlist 종목 수"]
+
+    DISPATCH --> SA1 & SA2 & SA3
+
+    subgraph PARALLEL["🤖 StockAnalysisAgent × N (병렬)"]
+        SA1["StockAgent\n종목 1"]
+        SA2["StockAgent\n종목 2"]
+        SA3["StockAgent\n종목 N"]
+    end
+
+    SA1 & SA2 & SA3 --> AGG["📊 aggregate_node\n전체 결과 수집·실패 종목 식별"]
+
+    AGG --> OUTPUT
+
+    subgraph OUTPUT["📄 OutputAgent (순차)"]
+        direction LR
+        OA1[markdown] --> OA2[pdf]
+        OA2 --> OA3[ppt]
+        OA3 --> OA4[summary]
+    end
+
+    OUTPUT --> HITL3["⛔ HITL-3\n전체 최종 승인\n(Supervisor 레벨)"]
+    HITL3 -- "approve / timeout" --> END([⏹ END])
+    HITL3 -- "reject" --> OUTPUT
+
+    style DISPATCH fill:#cfe2ff,stroke:#0d6efd
+    style HITL3 fill:#d1e7dd,stroke:#198754
+```
+
+---
+
+## 4-1. StockAnalysisAgent 내부 상태 그래프 (HITL 포함)
 
 ```mermaid
 stateDiagram-v2
-    [*] --> collect_node : 세션 시작\n(stock_code, session_id)
+    [*] --> analyze_node : StockAgent 시작\n(StockState 수신)
 
-    collect_node --> analyze_node : RAG 초기 문서 수집 완료
-
-    analyze_node --> question_node : 분석 메모 생성 완료
+    analyze_node --> question_node : RAG 수집 + 분석 완료
 
     question_node --> HITL_Q : 자율 질문 3~5개 생성
 
@@ -278,7 +307,7 @@ stateDiagram-v2
     }
 
     HITL_Q --> search_node : approve / edit / timeout
-    HITL_Q --> [*] : skip (분석 중단)
+    HITL_Q --> [*] : skip → status=skipped
 
     search_node --> synthesize_node : 웹 검색 완료
 
@@ -294,17 +323,6 @@ stateDiagram-v2
     HITL_DRAFT --> evaluate_node : approve / edit / timeout
     HITL_DRAFT --> question_node : rewrite (루프 재진입)
 
-    evaluate_node --> HITL_FINAL : quality_score ≥ 0.7\n또는 force_approved
-
-    state HITL_FINAL {
-        [*] --> waiting_f : ⛔ HITL-3 최종 승인\n(4시간 타임아웃)
-        waiting_f --> final_ok : approve / timeout
-        waiting_f --> final_reject : reject
-    }
-
-    HITL_FINAL --> output_node : approve / timeout
-    HITL_FINAL --> HITL_DRAFT : reject
-
     evaluate_node --> HITL_GUIDE : quality_score < 0.7\n& iteration < 3
 
     state HITL_GUIDE {
@@ -314,20 +332,22 @@ stateDiagram-v2
     }
 
     HITL_GUIDE --> question_node : guided (iteration++)
-    HITL_GUIDE --> output_node : force_approve
+    HITL_GUIDE --> complete_node : force_approve
 
-    output_node --> [*] : 보고서·PPT 저장\nsession status = completed
+    evaluate_node --> complete_node : quality_score ≥ 0.7\n또는 force_approved
+
+    complete_node --> [*] : Supervisor에 결과 반환\n{status, quality_score, draft}
 ```
 
 ---
 
-## 5. LangGraph 노드별 상세 처리 흐름 (HITL 포함)
+## 5. StockAnalysisAgent 노드별 상세 처리 흐름
 
 ```mermaid
 flowchart TD
-    START([▶ START\nstock_code 입력]) --> INIT
+    START([▶ StockAgent 시작\nStockState 수신]) --> INIT
 
-    INIT["🔧 초기화\n- analysis_sessions 생성\n- status = running\n- iteration = 0\n- hitl_mode 설정"]
+    INIT["🔧 초기화\n- analysis_sessions 생성\n- status = running\n- iteration = 0"]
 
     INIT --> COLLECT
 
@@ -447,21 +467,21 @@ flowchart TD
     HITL4 -- "guide / timeout" --> QUESTION
     HITL4 -- "force_approve" --> OUTPUT
 
-    subgraph OUTPUT["💾 output_node — 최종 저장"]
-        O1["generated_reports INSERT\n(md/pdf/ppt 경로, quality_score)"] --> O2
+    subgraph COMPLETE["✅ complete_node — Supervisor에 결과 반환"]
+        O1["generated_reports INSERT\n(draft, quality_score)"] --> O2
         O2["report_sources INSERT\n(출처 audit trail)"] --> O3
-        O3["analysis_sessions 업데이트\nstatus = completed\ncompleted_at = now()"]
+        O3["analysis_sessions 업데이트\nstatus = completed"]
+        O3 --> O4["StockResult 반환\n{stock_code, status,\nquality_score, draft}"]
     end
 
-    OUTPUT --> END([⏹ END\n보고서 생성 완료])
+    COMPLETE --> END([⏹ StockAgent 종료\nSupervisor aggregate_node로])
 
     style HITL1 fill:#fff3cd,stroke:#ffc107
     style HITL2 fill:#fff3cd,stroke:#ffc107
-    style HITL3 fill:#d1e7dd,stroke:#198754
     style HITL4 fill:#f8d7da,stroke:#dc3545
     style BRANCH fill:#e2e3e5,stroke:#6c757d
     style EVALUATE fill:#f8d7da,stroke:#dc3545
-    style OUTPUT fill:#d1e7dd,stroke:#198754
+    style COMPLETE fill:#d1e7dd,stroke:#198754
     style START fill:#cfe2ff,stroke:#0d6efd
     style END fill:#cfe2ff,stroke:#0d6efd
     style ENDEARLY fill:#e2e3e5,stroke:#6c757d
@@ -469,45 +489,50 @@ flowchart TD
 
 ---
 
-## 6. LangGraph 상태(State) 전이 상세 (HITL 필드 포함)
+## 6. 멀티 에이전트 State 구조
 
 ```mermaid
-flowchart LR
-    subgraph State["📋 AgentState 스키마"]
+flowchart TB
+    subgraph SUP_STATE["📋 SupervisorState\n(supervisor.py 보유)"]
         direction TB
-        ST1["stock_code: str"]
-        ST2["company_name: str"]
-        ST3["session_id: int"]
-        ST4["collected_docs: list[dict]\n(RAG 검색 결과 누적)"]
-        ST5["analysis_notes: str\n(중간 분석 메모)"]
-        ST6["generated_questions: list[str]"]
-        ST7["search_results: list[dict]"]
-        ST8["report_draft: str"]
-        ST9["quality_score: float"]
-        ST10["iteration: int\n(최대 3)"]
-        ST11["status: str\nrunning/completed/failed/skipped"]
-        ST12["hitl_mode: str\nFULL-AUTO/SEMI-AUTO/FULL-REVIEW"]
-        ST13["human_q_feedback: dict|None\n(action, revised_questions)"]
-        ST14["human_draft_feedback: dict|None\n(action, revised_draft, guide)"]
-        ST15["rewrite_guide: str|None\n(HITL-4 방향 가이드)"]
-        ST16["force_approved: bool\n(품질 미달 강제 승인)"]
+        SS1["date: str"]
+        SS2["hitl_mode: str"]
+        SS3["watchlist: list[str]"]
+        SS4["collection_done: bool"]
+        SS5["stock_results: list[dict]\n{stock_code, status,\n quality_score, draft}"]
+        SS6["failed_stocks: list[str]"]
+        SS7["final_approved: bool"]
     end
 
-    subgraph Mutations["🔄 노드별 State 변경"]
+    subgraph STOCK_STATE["📋 StockState\n(stock_agent.py 인스턴스별 독립 보유)"]
         direction TB
-        M1["collect_node\n→ collected_docs 채움"]
-        M2["analyze_node\n→ analysis_notes 채움"]
-        M3["question_node\n→ generated_questions 채움\n→ rewrite_guide 소비"]
-        M4["hitl_q_node\n→ human_q_feedback 수신\n→ generated_questions 업데이트"]
-        M5["search_node\n→ search_results 추가\n→ collected_docs 확장"]
-        M6["synthesize_node\n→ report_draft 채움"]
-        M7["hitl_draft_node\n→ human_draft_feedback 수신\n→ report_draft 수정 or rewrite_guide 저장"]
-        M8["evaluate_node\n→ quality_score 산정\n→ iteration 증가"]
-        M9["hitl_guide_node\n→ rewrite_guide 저장\n→ force_approved 설정"]
-        M10["output_node\n→ status = completed"]
+        SK1["stock_code: str"]
+        SK2["company_name: str"]
+        SK3["session_id: int"]
+        SK4["collected_docs: list[dict]"]
+        SK5["analysis_notes: str"]
+        SK6["generated_questions: list[str]"]
+        SK7["search_results: list[dict]"]
+        SK8["report_draft: str"]
+        SK9["quality_score: float"]
+        SK10["iteration: int"]
+        SK11["status: str"]
+        SK12["hitl_mode: str"]
+        SK13["human_q_feedback: dict|None"]
+        SK14["human_draft_feedback: dict|None"]
+        SK15["rewrite_guide: str|None"]
+        SK16["force_approved: bool"]
     end
 
-    State -.-> Mutations
+    subgraph FLOW["🔄 State 흐름"]
+        direction LR
+        F1["Supervisor\ndispatch_node"] -- "Send(StockState)" --> F2["StockAgent\n(인스턴스 N개)"]
+        F2 -- "StockResult 반환" --> F3["Supervisor\naggregate_node"]
+        F3 -- "stock_results 누적" --> F4["SupervisorState\n업데이트"]
+    end
+
+    SUP_STATE -.->|"dispatch 시 초기값 주입"| STOCK_STATE
+    STOCK_STATE -.->|"완료 시 결과 반환"| SUP_STATE
 ```
 
 ---
@@ -550,28 +575,40 @@ graph LR
 
 ```mermaid
 gantt
-    title 일별 자동화 실행 타임라인 (18:00 시작)
+    title 일별 자동화 타임라인 — 멀티 에이전트 (18:00 시작, SEMI-AUTO)
     dateFormat HH:mm
     axisFormat %H:%M
 
-    section 데이터 수집
-    네이버 리포트 수집       :collect1, 18:00, 10m
-    DART 공시 수집           :collect2, after collect1, 5m
-    재무 지표 수집           :collect3, after collect2, 10m
-    뉴스 수집 + 스코어링     :collect4, after collect3, 15m
+    section CollectionAgent (순차)
+    naver_report_node        :collect1, 18:00, 10m
+    dart_node                :collect2, after collect1, 5m
+    financial_node           :collect3, after collect2, 10m
+    news_node + indexer_node :collect4, after collect3, 25m
 
-    section RAG 색인
-    ChromaDB 신규 색인       :index, after collect4, 10m
+    section StockAgent 병렬 (Send × 3)
+    종목1 분석+질문생성       :agent1a, after collect4, 20m
+    종목2 분석+질문생성       :agent2a, after collect4, 20m
+    종목3 분석+질문생성       :agent3a, after collect4, 20m
 
-    section AI 분석 + HITL (종목별)
-    종목 1 LangGraph 실행    :agent1, after index, 20m
-    ⛔ HITL-1 질문 검토 대기  :crit, hitl1, after agent1, 30m
-    종목 1 검색+초안 작성     :agent1b, after hitl1, 15m
-    ⛔ HITL-2 초안 검토 대기  :crit, hitl2, after agent1b, 120m
-    종목 1 평가+승인         :agent1c, after hitl2, 10m
+    section HITL-1 (종목별 독립 대기)
+    ⛔ 종목1 질문 검토        :crit, h1a, after agent1a, 30m
+    ⛔ 종목2 질문 검토        :crit, h1b, after agent2a, 30m
+    ⛔ 종목3 질문 검토        :crit, h1c, after agent3a, 30m
 
-    section 보고서 생성
-    MD 보고서 생성           :report1, after agent1c, 5m
-    PDF 변환                 :report2, after report1, 3m
-    PPT 생성                 :report3, after report2, 5m
+    section StockAgent 병렬 (검색+초안)
+    종목1 검색+초안           :agent1b, after h1a, 15m
+    종목2 검색+초안           :agent2b, after h1b, 15m
+    종목3 검색+초안           :agent3b, after h1c, 15m
+
+    section HITL-2 (종목별 독립 대기)
+    ⛔ 종목1 초안 검토        :crit, h2a, after agent1b, 120m
+    ⛔ 종목2 초안 검토        :crit, h2b, after agent2b, 120m
+    ⛔ 종목3 초안 검토        :crit, h2c, after agent3b, 120m
+
+    section aggregate + OutputAgent
+    aggregate_node           :agg, after h2a, 2m
+    OutputAgent (MD+PDF+PPT) :out, after agg, 15m
+
+    section HITL-3 (Supervisor 최종 승인)
+    ⛔ 전체 최종 승인         :crit, h3, after out, 240m
 ```
