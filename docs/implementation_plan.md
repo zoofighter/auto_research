@@ -1,7 +1,7 @@
 # 구현 상세 계획 및 전략
 
 **작성일:** 2026-04-08  
-**버전:** 1.2 (멀티 에이전트 전환)
+**버전:** 1.3 (주가 시계열 + price_context 추가)
 
 ---
 
@@ -19,7 +19,7 @@
 
 ```
 Phase 1: 기반 인프라        (DB + 설정 + 공통 유틸)
-Phase 2: 데이터 수집기      (5개 소스별 수집 모듈)
+Phase 2: 데이터 수집기      (6개 소스별 수집 모듈)
 Phase 3: RAG 파이프라인     (ChromaDB 색인 + 검색)
 Phase 4: LangGraph 멀티 에이전트 (Supervisor + 병렬 StockAgent + HITL)
 Phase 5: 보고서 생성기      (Report MD/PDF + PPT)
@@ -52,6 +52,7 @@ a_0408_report/
 │   ├── dart_api.py              # DART Open API 수집
 │   ├── naver_financial.py       # 네이버 재무 지표 스크래핑
 │   ├── news_collector.py        # 관심종목 뉴스 수집
+│   ├── price_collector.py       # 일별 OHLCV 수집 (FinanceDataReader)
 │   └── stock_manager.py         # 종목 마스터 관리 (watchlist 추가/제거)
 │
 ├── vector_db/                   # Phase 3 — RAG
@@ -153,7 +154,7 @@ a_0408_report/
 
 ### Phase 2: 데이터 수집기
 
-**목표:** 5개 소스에서 데이터 수집 후 SQLite 적재
+**목표:** 6개 소스에서 데이터 수집 후 SQLite 적재
 
 #### 2-1. `collectors/naver_report.py` — 리포트 수집기
 
@@ -228,7 +229,27 @@ URL 패턴:
   5. 일별 종목당 최대 5건 저장 (score 상위 5건)
 ```
 
-#### 2-5. `collectors/stock_manager.py` — 종목 마스터 관리
+#### 2-5. `collectors/price_collector.py` — 주가 시계열 수집기
+
+```
+라이브러리: FinanceDataReader (pip install finance-datareader)
+데이터 소스: KRX / 네이버 금융 일별 OHLCV
+
+수집 흐름:
+  1. is_watchlist=true 종목 순회
+  2. stock_prices 테이블에서 해당 종목 max(date) 조회
+  3. 마지막 수집일 다음 날 ~ 오늘까지 OHLCV 조회
+     (최초 실행 시: 1년치 = 약 250거래일)
+  4. stock_prices 테이블에 UPSERT (UNIQUE 제약 활용)
+
+실행 모드:
+  - 일별 갱신: today_only=True (오늘 종가 1건 INSERT)
+  - 초기 구축: today_only=False (1년치 대량 수집)
+
+주의: 장 마감 후(16:00 이후) 실행 권장
+```
+
+#### 2-6. `collectors/stock_manager.py` — 종목 마스터 관리
 
 ```
 기능:
@@ -531,26 +552,43 @@ HITL 병렬성 주의:
 
 **analyze_node (문서 분석)**
 ```
-입력: collected_docs
+입력: collected_docs + price_context (신규)
 처리:
+  [기존]
   - 투자의견 변화 추적 (Buy→Hold 등)
   - 목표주가 트렌드 (상향/하향 횟수)
   - 핵심 리스크 키워드 추출
   - 재무 지표 이상치 탐지
-출력: analysis_notes (구조화된 분석 메모)
+
+  [신규: price_context 생성]
+  1. stock_prices에서 최근 20거래일 OHLCV 조회
+  2. 일별 등락률 = (close - prev_close) / prev_close × 100
+  3. ±3% 이상 변동일 감지 → 이상 거래일 목록 추출
+  4. 이상 거래일 ±2일 범위의 dart_disclosures, news_articles JOIN
+  5. price_context 문자열 생성:
+       "2026-03-22: -8.3% 급락 / 공시: 전환사채 발행 결정 (rcept_dt=2026-03-22)
+        2026-04-01: +5.1% 급등 / 뉴스: 반도체 수출 규제 완화 기대 (relevance=0.92)"
+
+출력: analysis_notes + price_context (LLM 프롬프트에 함께 포함)
 ```
 
 **question_node (자율 질문 생성)**
 ```
-입력: analysis_notes
+입력: analysis_notes + price_context (신규)
 프롬프트 전략:
-  "다음 분석에서 불확실하거나 추가 확인이 필요한 사항을
+  "다음 분석 메모와 주가 이상 이벤트를 참고하여
+   불확실하거나 추가 확인이 필요한 사항을
    구체적인 검색 질문 형태로 3~5개 생성하라"
 
-예시 생성 질문:
+예시 생성 질문 (문서 기반):
   - "{company_name}의 최근 3개월 외국인 순매도 원인은?"
   - "{company_name} vs {competitor} PER 프리미엄 이유는?"
   - "{company_name} {사업분야} 시장 점유율 변화 2025~2026"
+
+예시 생성 질문 (price_context 기반, 신규):
+  - "{company_name} 2026-03-22 전환사채 발행이 주가에 미치는 장기 영향은?"
+  - "반도체 수출 규제 완화 이후 {company_name} 실적 전망 변화는?"
+  - "최근 20일간 주가 -15% 하락에도 애널리스트 목표주가 유지 이유는?"
 ```
 
 **evaluate_node (품질 평가)**

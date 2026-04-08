@@ -1,7 +1,7 @@
 # DB 논리 설계서 - 주식 분석 AI 시스템
 
 **작성일:** 2026-04-08  
-**버전:** 1.1 (HITL 추가)  
+**버전:** 1.2 (주가 시계열 추가)  
 **기술 스택:** SQLite + SQLAlchemy ORM / ChromaDB (Vector DB)
 
 ---
@@ -19,9 +19,10 @@
 │    ├── financial_metrics               │    │
 │    ├── dart_disclosures                │    │
 │    ├── news_articles                   │    │
+│    ├── stock_prices                    │    │  ← 주가 시계열 추가
 │    ├── analysis_sessions               │    │
 │    │       ├── web_search_results      │    │
-│    │       └── hitl_feedbacks          │    │  ← HITL 추가
+│    │       └── hitl_feedbacks          │    │
 │    └── generated_reports ─────────────┘    │
 │              └── report_sources             │
 └─────────────────────────────────────────────┘
@@ -182,7 +183,35 @@
 
 ---
 
-### 2.7 analysis_sessions — LangGraph 워크플로우 세션
+### 2.7 stock_prices — 주가 시계열
+
+**목적:** 일별 OHLCV(시가·고가·저가·종가·거래량) 저장. analyze_node가 가격 이상 감지 및 이벤트 상관 분석에 활용.  
+**수집 소스:** FinanceDataReader (KRX / 네이버 금융)
+
+| 컬럼 | 타입 | 제약 | 설명 |
+|------|------|------|------|
+| id | INTEGER | PK | |
+| stock_id | INTEGER | FK→stocks, NOT NULL | |
+| date | DATE | NOT NULL | 거래일 |
+| open | FLOAT | NOT NULL | 시가 (원) |
+| high | FLOAT | NOT NULL | 고가 (원) |
+| low | FLOAT | NOT NULL | 저가 (원) |
+| close | FLOAT | NOT NULL | 종가 (원) |
+| volume | BIGINT | NOT NULL | 거래량 (주) |
+| created_at | DATETIME | DEFAULT now() | |
+
+**제약:** UNIQUE(stock_id, date)  
+**인덱스:** stock_id, date
+
+> **활용 방식:**  
+> `analyze_node`가 최근 20거래일 OHLCV를 조회하여 ±3% 이상 변동일을 감지하고,  
+> 해당 날짜와 근접한 `dart_disclosures`·`news_articles` 레코드를 JOIN하여  
+> `price_context` 문자열을 생성 → LLM 프롬프트에 포함 → `question_node`가  
+> 가격 이상 원인을 자동 질문으로 생성.
+
+---
+
+### 2.8 analysis_sessions — LangGraph 워크플로우 세션
 
 **목적:** 분석 실행 이력 관리. 반복(iteration) 횟수, 생성된 질문, 상태 및 HITL 상태 추적.
 
@@ -205,7 +234,7 @@
 
 ---
 
-### 2.8 web_search_results — 웹 검색 결과
+### 2.9 web_search_results — 웹 검색 결과
 
 **목적:** 자율 질문 기반으로 실행된 웹 검색 결과 저장. RAG 추가 색인 대상.
 
@@ -223,7 +252,7 @@
 
 ---
 
-### 2.9 generated_reports — 최종 보고서
+### 2.10 generated_reports — 최종 보고서
 
 **목적:** AI가 생성한 최종 분석 보고서 및 PPT 경로 저장.
 
@@ -244,7 +273,7 @@
 
 ---
 
-### 2.10 report_sources — 출처 추적 (Audit Trail)
+### 2.11 report_sources — 출처 추적 (Audit Trail)
 
 **목적:** 보고서의 각 근거가 어떤 원본 문서에서 왔는지 추적. 환각 방지.
 
@@ -261,7 +290,7 @@
 
 ---
 
-### 2.11 hitl_feedbacks — HITL 피드백 이력 ← 신규
+### 2.12 hitl_feedbacks — HITL 피드백 이력 ← 신규
 
 **목적:** 사람이 각 HITL 지점에서 입력한 피드백·수정 내용 저장. HITL 응답 시간 및 행동 패턴 분석용.
 
