@@ -29,6 +29,6 @@ def get_session():
 def init_db():
     """모든 테이블 생성 (개발/테스트용)."""
     from db.models import (  # noqa: F401
-        stock, report, financial, dart, news, analysis, output
+        stock, report, financial, dart, news, analysis, output, price, hitl
     )
     Base.metadata.create_all(bind=engine)

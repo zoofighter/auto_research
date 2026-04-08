@@ -1,3 +1,4 @@
+from typing import Optional
 from datetime import datetime
 from sqlalchemy import DateTime, Float, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -13,10 +14,10 @@ class NewsArticle(Base):
     stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id"), nullable=False, index=True)
     headline: Mapped[str] = mapped_column(String(500), nullable=False)
     url: Mapped[str] = mapped_column(String(500), nullable=False)
-    source: Mapped[str | None] = mapped_column(String(100))         # 언론사
-    published_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
-    relevance_score: Mapped[float | None] = mapped_column(Float)    # LLM 관련도 0.0~1.0
-    summary: Mapped[str | None] = mapped_column(Text)               # LLM 요약
+    source: Mapped[Optional[str]] = mapped_column(String(100))         # 언론사
+    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
+    relevance_score: Mapped[Optional[float]] = mapped_column(Float)    # LLM 관련도 0.0~1.0
+    summary: Mapped[Optional[str]] = mapped_column(Text)               # LLM 요약
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     # relationships

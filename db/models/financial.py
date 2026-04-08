@@ -1,3 +1,4 @@
+from typing import Optional
 from datetime import date, datetime
 from sqlalchemy import Date, DateTime, Float, ForeignKey, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -15,31 +16,31 @@ class FinancialMetric(Base):
     metric_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
 
     # 밸류에이션
-    per: Mapped[float | None] = mapped_column(Float)
-    pbr: Mapped[float | None] = mapped_column(Float)
-    psr: Mapped[float | None] = mapped_column(Float)
-    ev_ebitda: Mapped[float | None] = mapped_column(Float)
+    per: Mapped[Optional[float]] = mapped_column(Float)
+    pbr: Mapped[Optional[float]] = mapped_column(Float)
+    psr: Mapped[Optional[float]] = mapped_column(Float)
+    ev_ebitda: Mapped[Optional[float]] = mapped_column(Float)
 
     # 수익성
-    operating_margin: Mapped[float | None] = mapped_column(Float)   # 영업이익률 (%)
-    roe: Mapped[float | None] = mapped_column(Float)
-    roa: Mapped[float | None] = mapped_column(Float)
-    ebitda_margin: Mapped[float | None] = mapped_column(Float)
+    operating_margin: Mapped[Optional[float]] = mapped_column(Float)   # 영업이익률 (%)
+    roe: Mapped[Optional[float]] = mapped_column(Float)
+    roa: Mapped[Optional[float]] = mapped_column(Float)
+    ebitda_margin: Mapped[Optional[float]] = mapped_column(Float)
 
     # 성장성 (YoY %)
-    revenue_yoy: Mapped[float | None] = mapped_column(Float)
-    op_income_yoy: Mapped[float | None] = mapped_column(Float)
-    eps_growth: Mapped[float | None] = mapped_column(Float)
+    revenue_yoy: Mapped[Optional[float]] = mapped_column(Float)
+    op_income_yoy: Mapped[Optional[float]] = mapped_column(Float)
+    eps_growth: Mapped[Optional[float]] = mapped_column(Float)
 
     # 안정성
-    debt_ratio: Mapped[float | None] = mapped_column(Float)         # 부채비율 (%)
-    current_ratio: Mapped[float | None] = mapped_column(Float)      # 유동비율 (%)
-    interest_coverage: Mapped[float | None] = mapped_column(Float)  # 이자보상배율
+    debt_ratio: Mapped[Optional[float]] = mapped_column(Float)         # 부채비율 (%)
+    current_ratio: Mapped[Optional[float]] = mapped_column(Float)      # 유동비율 (%)
+    interest_coverage: Mapped[Optional[float]] = mapped_column(Float)  # 이자보상배율
 
     # 시장 데이터
-    market_cap: Mapped[float | None] = mapped_column(Float)                  # 시가총액 (억원)
-    foreign_shareholding_pct: Mapped[float | None] = mapped_column(Float)   # 외국인 보유비율 (%)
-    net_institutional_buying: Mapped[float | None] = mapped_column(Float)   # 기관 순매수 (주)
+    market_cap: Mapped[Optional[float]] = mapped_column(Float)                  # 시가총액 (억원)
+    foreign_shareholding_pct: Mapped[Optional[float]] = mapped_column(Float)   # 외국인 보유비율 (%)
+    net_institutional_buying: Mapped[Optional[float]] = mapped_column(Float)   # 기관 순매수 (주)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

@@ -1,3 +1,4 @@
+from typing import Optional
 from datetime import date, datetime
 from sqlalchemy import Boolean, Date, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -18,8 +19,8 @@ class DartDisclosure(Base):
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     corp_name: Mapped[str] = mapped_column(String(100), nullable=False)
     rcept_dt: Mapped[date] = mapped_column(Date, nullable=False, index=True)
-    url: Mapped[str | None] = mapped_column(String(500))
-    summary: Mapped[str | None] = mapped_column(Text)
+    url: Mapped[Optional[str]] = mapped_column(String(500))
+    summary: Mapped[Optional[str]] = mapped_column(Text)
     is_major_event: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
