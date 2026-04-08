@@ -1,7 +1,7 @@
 # 테스트 및 검증 전략
 
 **작성일:** 2026-04-08  
-**버전:** 1.0
+**버전:** 1.1 (HITL 추가)
 
 ---
 
@@ -253,11 +253,71 @@ evaluate_node:
   검증: 다음 종목 실행에 영향 없음 (격리)
 ```
 
-#### 4-3. E2E 에이전트 테스트
+#### 4-3. HITL 노드 단위 테스트
+
+```
+hitl_q_node (HITL-1):
+  시나리오 A — approve:
+    입력: Mock 사람 입력 {action: "approve"}
+    검증: state.generated_questions 변경 없음
+    검증: hitl_feedbacks INSERT (action=approved)
+    검증: analysis_sessions.hitl_q_status = "approved"
+
+  시나리오 B — edit:
+    입력: Mock 사람 입력 {action: "edit", revised_questions: ["새질문1", "새질문2"]}
+    검증: state.generated_questions = ["새질문1", "새질문2"]
+    검증: hitl_feedbacks INSERT (action=edited, revised_content 포함)
+
+  시나리오 C — skip:
+    입력: Mock 사람 입력 {action: "skip"}
+    검증: 워크플로우 종료 (search_node 미실행)
+    검증: analysis_sessions.status = "skipped"
+
+  시나리오 D — timeout:
+    설정: HITL_TIMEOUT_Q = 0 (즉시 타임아웃)
+    검증: 원래 질문 그대로 유지, 자동 진행
+    검증: hitl_feedbacks INSERT (action=timeout)
+
+hitl_draft_node (HITL-2):
+  시나리오 A — approve: 초안 변경 없이 evaluate_node 진행
+  시나리오 B — edit: 수정된 초안으로 evaluate_node 진행
+  시나리오 C — rewrite: state.rewrite_guide 저장, question_node 재진입 확인
+  시나리오 D — timeout: 원래 초안으로 자동 진행
+
+hitl_guide_node (HITL-4):
+  시나리오 A — guide 입력:
+    검증: state.rewrite_guide = 입력 텍스트
+    검증: iteration_count 증가 후 question_node 재진입
+  시나리오 B — force_approve:
+    검증: state.force_approved = True
+    검증: output_node 직행 (추가 루프 없음)
+```
+
+#### 4-4. HITL 운영 모드 테스트
+
+```
+FULL-AUTO 모드:
+  설정: HITL_MODE = "FULL-AUTO"
+  검증: 모든 interrupt 노드 스킵
+  검증: hitl_feedbacks에 action=timeout 자동 기록
+  검증: 기존 E2E 테스트와 동일한 결과
+
+SEMI-AUTO 모드 (기본):
+  설정: HITL_MODE = "SEMI-AUTO"
+  검증: HITL-1, HITL-2만 interrupt 발생
+  검증: HITL-3, HITL-4는 자동 진행
+
+FULL-REVIEW 모드:
+  설정: HITL_MODE = "FULL-REVIEW"
+  검증: 모든 HITL 지점에서 interrupt 발생
+  검증: 타임아웃 없이 무한 대기 (테스트 시 Mock 입력으로 즉시 resolve)
+```
+
+#### 4-5. E2E 에이전트 테스트
 
 ```
 실행 방법:
-  python agents/graph.py --stock-code 005930 --mock-llm
+  python agents/graph.py --stock-code 005930 --mock-llm --hitl-mode FULL-AUTO
 
 Mock LLM 사용 이유:
   - 실제 LLM은 응답 시간이 길고 비결정적
@@ -268,9 +328,11 @@ Mock LLM 사용 이유:
   ✅ web_search_results 레코드 ≥ 3건
   ✅ generated_reports 레코드 1건
   ✅ report_sources 레코드 ≥ 1건
+  ✅ hitl_feedbacks 레코드 ≥ 2건 (HITL-1, HITL-2 각 1건)
   ✅ quality_score 컬럼 NULL이 아님
   ✅ iteration_count ≤ 3
   ✅ completed_at > started_at
+  ✅ analysis_sessions.hitl_q_status, hitl_draft_status NULL이 아님
 ```
 
 ---
@@ -343,12 +405,20 @@ python-pptx로 자동 검증:
 성공 기준:
   ✅ Step 1~5 모두 오류 없이 완료
   ✅ reports/2026-04-08/ 디렉터리에 종목별 .md, .pdf, .pptx 생성
-  ✅ 실행 시간 ≤ 90분 (종목 3개 기준)
+  ✅ 실행 시간 ≤ 90분 (FULL-AUTO 모드, 종목 3개 기준)
   ✅ 재실행 시 중복 데이터 없음 (멱등성)
+  ✅ hitl_feedbacks 테이블에 종목별 HITL 이력 기록 확인
+
+HITL SEMI-AUTO 모드 E2E:
+  실행: python scheduler/daily_runner.py --hitl-mode SEMI-AUTO --mock-human
+  (--mock-human: 모든 HITL 지점에 자동 approve 입력)
+  검증: HITL-1, HITL-2 hitl_feedbacks 레코드 생성 확인
+  검증: response_latency_min = 0 (즉시 응답)
 
 실패 시 격리 검증:
   - 종목 1 DART 수집 실패 → 종목 2, 3 정상 실행 확인
   - 종목 2 LLM 응답 실패 → status=failed 기록, 종목 3 정상 실행 확인
+  - 종목 3 HITL skip → status=skipped 기록, 보고서 미생성 확인
 ```
 
 ---
@@ -474,12 +544,12 @@ fixtures/
 
 ```mermaid
 flowchart TD
-    P1["Phase 1 검증\n✅ 10개 테이블 생성\n✅ FK/UNIQUE 제약 동작\n✅ 세션 롤백"]
+    P1["Phase 1 검증\n✅ 11개 테이블 생성\n   (hitl_feedbacks 포함)\n✅ FK/UNIQUE 제약 동작\n✅ 세션 롤백"]
     P2["Phase 2 검증\n✅ 4개 수집기 단독 실행\n✅ DB 적재 확인\n✅ 멱등성(재실행 중복 없음)"]
     P3["Phase 3 검증\n✅ ChromaDB 4개 컬렉션\n✅ is_processed 업데이트\n✅ 검색 관련성 80%"]
-    P4["Phase 4 검증\n✅ 노드별 단위 테스트\n✅ 루프 3회 강제 종료\n✅ 에러 격리"]
+    P4["Phase 4 검증\n✅ 노드별 단위 테스트\n✅ HITL 4개 지점 시나리오\n✅ 3가지 운영 모드 확인\n✅ 루프 3회 강제 종료\n✅ 에러 격리"]
     P5["Phase 5 검증\n✅ .md/.pdf/.pptx 생성\n✅ 9슬라이드 확인\n✅ 출처 목록 존재"]
-    P6["Phase 6 검증\n✅ 3종목 E2E 완주\n✅ 90분 이내\n✅ 재실행 멱등성"]
+    P6["Phase 6 검증\n✅ 3종목 E2E 완주\n✅ HITL mock-human 모드\n✅ hitl_feedbacks 이력 확인\n✅ 재실행 멱등성"]
 
     P1 --> P2 --> P3 --> P4 --> P5 --> P6
 ```

@@ -1,7 +1,7 @@
 # DB 논리 설계서 - 주식 분석 AI 시스템
 
 **작성일:** 2026-04-08  
-**버전:** 1.0  
+**버전:** 1.1 (HITL 추가)  
 **기술 스택:** SQLite + SQLAlchemy ORM / ChromaDB (Vector DB)
 
 ---
@@ -20,7 +20,8 @@
 │    ├── dart_disclosures                │    │
 │    ├── news_articles                   │    │
 │    ├── analysis_sessions               │    │
-│    │       └── web_search_results      │    │
+│    │       ├── web_search_results      │    │
+│    │       └── hitl_feedbacks          │    │  ← HITL 추가
 │    └── generated_reports ─────────────┘    │
 │              └── report_sources             │
 └─────────────────────────────────────────────┘
@@ -183,7 +184,7 @@
 
 ### 2.7 analysis_sessions — LangGraph 워크플로우 세션
 
-**목적:** 분석 실행 이력 관리. 반복(iteration) 횟수, 생성된 질문, 상태 추적.
+**목적:** 분석 실행 이력 관리. 반복(iteration) 횟수, 생성된 질문, 상태 및 HITL 상태 추적.
 
 | 컬럼 | 타입 | 제약 | 설명 |
 |------|------|------|------|
@@ -191,9 +192,13 @@
 | stock_id | INTEGER | FK→stocks, NOT NULL | |
 | started_at | DATETIME | DEFAULT now() | |
 | completed_at | DATETIME | | |
-| status | VARCHAR(20) | DEFAULT 'running' | running / completed / failed |
+| status | VARCHAR(20) | DEFAULT 'running' | running / completed / failed / skipped |
 | iteration_count | INTEGER | DEFAULT 0 | 자율 질문→검색 반복 횟수 |
 | generated_questions | TEXT | | JSON 배열 (질문 리스트) |
+| hitl_mode | VARCHAR(20) | DEFAULT 'SEMI-AUTO' | FULL-AUTO / SEMI-AUTO / FULL-REVIEW |
+| hitl_q_status | VARCHAR(20) | DEFAULT 'pending' | pending / approved / edited / skipped / timeout |
+| hitl_draft_status | VARCHAR(20) | DEFAULT 'pending' | pending / approved / edited / rewrite / timeout |
+| hitl_final_status | VARCHAR(20) | DEFAULT 'pending' | pending / approved / rejected / timeout |
 | created_at | DATETIME | DEFAULT now() | |
 
 **인덱스:** stock_id, status
@@ -256,6 +261,27 @@
 
 ---
 
+### 2.11 hitl_feedbacks — HITL 피드백 이력 ← 신규
+
+**목적:** 사람이 각 HITL 지점에서 입력한 피드백·수정 내용 저장. HITL 응답 시간 및 행동 패턴 분석용.
+
+| 컬럼 | 타입 | 제약 | 설명 |
+|------|------|------|------|
+| id | INTEGER | PK | |
+| session_id | INTEGER | FK→analysis_sessions, NOT NULL | |
+| hitl_point | VARCHAR(20) | NOT NULL | HITL-1 / HITL-2 / HITL-3 / HITL-4 |
+| action | VARCHAR(30) | NOT NULL | approved / edited / rewrite / skipped / force_approved / rejected / timeout |
+| original_content | TEXT | | HITL 개입 전 내용 (질문 목록 or 초안) |
+| revised_content | TEXT | | 사람이 수정한 내용 (없으면 NULL) |
+| feedback_text | TEXT | | 재작성 가이드 or 거절 사유 텍스트 |
+| responded_at | DATETIME | | 사람 응답 시각 |
+| response_latency_min | INTEGER | | 응답까지 걸린 시간 (분) |
+| created_at | DATETIME | DEFAULT now() | |
+
+**인덱스:** session_id, hitl_point
+
+---
+
 ## 3. ERD (관계 다이어그램)
 
 ```
@@ -268,6 +294,7 @@ stocks (1) ───────────────────────
    ├── (N) news_articles
    │
    ├── (N) analysis_sessions (1) ─── (N) web_search_results
+   │                         (1) ─── (N) hitl_feedbacks      ← HITL 추가
    │
    └── (N) generated_reports (1) ─── (N) report_sources
               │

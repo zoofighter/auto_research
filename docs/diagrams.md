@@ -1,6 +1,7 @@
 # 시스템 다이어그램
 
-**작성일:** 2026-04-08
+**작성일:** 2026-04-08  
+**버전:** 1.1 (HITL 추가)
 
 ---
 
@@ -257,38 +258,76 @@ erDiagram
 
 ---
 
-## 4. LangGraph 워크플로우 — 전체 상태 그래프
+## 4. LangGraph 워크플로우 — 전체 상태 그래프 (HITL 포함)
 
 ```mermaid
 stateDiagram-v2
     [*] --> collect_node : 세션 시작\n(stock_code, session_id)
 
-    collect_node --> analyze_node : RAG 초기 문서 수집 완료\n(analyst_reports + dart + news)
+    collect_node --> analyze_node : RAG 초기 문서 수집 완료
 
-    analyze_node --> question_node : 분석 메모 생성 완료\n(투자의견·목표주가·리스크 추출)
+    analyze_node --> question_node : 분석 메모 생성 완료
 
-    question_node --> search_node : 자율 질문 3~5개 생성\n(분석 공백 탐지 기반)
+    question_node --> HITL_Q : 자율 질문 3~5개 생성
 
-    search_node --> synthesize_node : 웹 검색 완료\n(ChromaDB 추가 색인)
+    state HITL_Q {
+        [*] --> waiting_q : ⛔ HITL-1 질문 검토\n(30분 타임아웃)
+        waiting_q --> approved_q : approve / timeout
+        waiting_q --> edited_q : edit / add
+        waiting_q --> skipped : skip
+    }
 
-    synthesize_node --> evaluate_node : 보고서 초안 작성 완료\n(전체 문서 통합)
+    HITL_Q --> search_node : approve / edit / timeout
+    HITL_Q --> [*] : skip (분석 중단)
 
-    evaluate_node --> output_node : quality_score ≥ 0.7\n또는 iteration ≥ 3
+    search_node --> synthesize_node : 웹 검색 완료
 
-    evaluate_node --> question_node : quality_score < 0.7\n& iteration < 3\n(iteration++)
+    synthesize_node --> HITL_DRAFT : 보고서 초안 완성
+
+    state HITL_DRAFT {
+        [*] --> waiting_d : ⛔ HITL-2 초안 검토\n(2시간 타임아웃)
+        waiting_d --> approved_d : approve / timeout
+        waiting_d --> edited_d : edit
+        waiting_d --> rewrite_req : rewrite
+    }
+
+    HITL_DRAFT --> evaluate_node : approve / edit / timeout
+    HITL_DRAFT --> question_node : rewrite (루프 재진입)
+
+    evaluate_node --> HITL_FINAL : quality_score ≥ 0.7\n또는 force_approved
+
+    state HITL_FINAL {
+        [*] --> waiting_f : ⛔ HITL-3 최종 승인\n(4시간 타임아웃)
+        waiting_f --> final_ok : approve / timeout
+        waiting_f --> final_reject : reject
+    }
+
+    HITL_FINAL --> output_node : approve / timeout
+    HITL_FINAL --> HITL_DRAFT : reject
+
+    evaluate_node --> HITL_GUIDE : quality_score < 0.7\n& iteration < 3
+
+    state HITL_GUIDE {
+        [*] --> waiting_g : ⛔ HITL-4 재작성 지시\n(1시간 타임아웃)
+        waiting_g --> guided : guide 입력 / timeout
+        waiting_g --> force_ok : force_approve
+    }
+
+    HITL_GUIDE --> question_node : guided (iteration++)
+    HITL_GUIDE --> output_node : force_approve
 
     output_node --> [*] : 보고서·PPT 저장\nsession status = completed
 ```
 
 ---
 
-## 5. LangGraph 노드별 상세 처리 흐름
+## 5. LangGraph 노드별 상세 처리 흐름 (HITL 포함)
 
 ```mermaid
 flowchart TD
     START([▶ START\nstock_code 입력]) --> INIT
 
-    INIT["🔧 초기화\n- analysis_sessions 생성\n- status = running\n- iteration = 0"]
+    INIT["🔧 초기화\n- analysis_sessions 생성\n- status = running\n- iteration = 0\n- hitl_mode 설정"]
 
     INIT --> COLLECT
 
@@ -315,10 +354,25 @@ flowchart TD
         Q1["분석 공백 탐지\n(불확실 항목 식별)"] --> Q2
         Q2["질문 생성 프롬프트\n'추가 확인 필요한 사항을\n검색 질문으로 3~5개 생성'"] --> Q3
         Q3["질문 구체화\n종목명·기간·비교 대상 포함"] --> Q4
-        Q4["generated_questions\n→ analysis_sessions 업데이트"]
+        Q4["rewrite_guide 있으면\n해당 방향 반영"] --> Q5
+        Q5["generated_questions\n→ analysis_sessions 업데이트"]
     end
 
-    QUESTION --> SEARCH
+    QUESTION --> HITL1
+
+    subgraph HITL1["⛔ HITL-1: hitl_q_node — 질문 검토"]
+        H1A["Telegram / CLI 알림 발송\n(질문 목록 전송)"] --> H1B
+        H1B["interrupt()\n그래프 일시 중단"] --> H1C
+        H1C{"사람 입력\n또는 30분 타임아웃"}
+        H1C -- "approve\n또는 timeout" --> H1D["질문 그대로 유지"]
+        H1C -- "edit / add" --> H1E["state.generated_questions\n수정 반영"]
+        H1C -- "skip" --> H1F["분석 중단\nstatus=skipped"]
+        H1D --> H1G["hitl_feedbacks INSERT"]
+        H1E --> H1G
+    end
+
+    HITL1 -- "approve / edit / timeout" --> SEARCH
+    HITL1 -- "skip" --> ENDEARLY([⏹ 분석 중단])
 
     subgraph SEARCH["🌐 search_node — 웹 검색 실행"]
         SR1["질문별 검색어 최적화\n(LLM 쿼리 재작성)"] --> SR2
@@ -338,21 +392,60 @@ flowchart TD
         SY5["report_draft\n완성 (Markdown 형식)"]
     end
 
-    SYNTHESIZE --> EVALUATE
+    SYNTHESIZE --> HITL2
+
+    subgraph HITL2["⛔ HITL-2: hitl_draft_node — 초안 검토"]
+        H2A["Telegram / CLI 알림 발송\n(Executive Summary + 링크)"] --> H2B
+        H2B["interrupt()\n그래프 일시 중단"] --> H2C
+        H2C{"사람 입력\n또는 2시간 타임아웃"}
+        H2C -- "approve / timeout" --> H2D["초안 그대로 evaluate로"]
+        H2C -- "edit" --> H2E["state.report_draft\n직접 수정 반영"]
+        H2C -- "rewrite + guide" --> H2F["state.rewrite_guide 저장\n→ question_node 재진입"]
+        H2D --> H2G["hitl_feedbacks INSERT"]
+        H2E --> H2G
+        H2F --> H2G
+    end
+
+    HITL2 -- "approve / edit / timeout" --> EVALUATE
+    HITL2 -- "rewrite" --> QUESTION
 
     subgraph EVALUATE["⚖️ evaluate_node — 품질 평가"]
-        E1["근거 충분성 평가\n주장별 출처 존재 여부\n(0 ~ 0.3점)"] --> E2
-        E2["균형성 평가\n긍정/부정 양면 포함\n(0 ~ 0.3점)"] --> E3
-        E3["구체성 평가\n수치·날짜 포함 여부\n(0 ~ 0.2점)"] --> E4
-        E4["논리성 평가\nSummary ↔ 본문 일치\n(0 ~ 0.2점)"] --> E5
+        E1["근거 충분성 평가\n(0 ~ 0.3점)"] --> E2
+        E2["균형성 평가\n(0 ~ 0.3점)"] --> E3
+        E3["구체성 평가\n(0 ~ 0.2점)"] --> E4
+        E4["논리성 평가\n(0 ~ 0.2점)"] --> E5
         E5["quality_score 합산\n0.0 ~ 1.0"]
     end
 
-    EVALUATE --> BRANCH{{"🔀 분기 판단\nquality_score ≥ 0.7?\n또는 iteration ≥ 3?"}}
+    EVALUATE --> BRANCH{{"🔀 분기\nquality_score ≥ 0.7\n또는 force_approved?"}}
 
-    BRANCH -- "YES\n(통과 또는 강제 종료)" --> OUTPUT
+    BRANCH -- "YES" --> HITL3
 
-    BRANCH -- "NO\niteration++" --> QUESTION
+    subgraph HITL3["⛔ HITL-3: hitl_final_node — 최종 승인"]
+        H3A["최종 승인 요청 알림"] --> H3B
+        H3B["interrupt()\n4시간 타임아웃"] --> H3C
+        H3C{"사람 입력"}
+        H3C -- "approve / timeout" --> H3D["hitl_feedbacks INSERT"]
+        H3C -- "reject" --> H3E["HITL-2로 복귀"]
+    end
+
+    HITL3 -- "approve / timeout" --> OUTPUT
+    HITL3 -- "reject" --> HITL2
+
+    BRANCH -- "NO\niteration < 3" --> HITL4
+
+    subgraph HITL4["⛔ HITL-4: hitl_guide_node — 재작성 지시"]
+        H4A["품질 미달 알림\n(quality_score 전송)"] --> H4B
+        H4B["interrupt()\n1시간 타임아웃"] --> H4C
+        H4C{"사람 입력"}
+        H4C -- "guide 입력 / timeout" --> H4D["rewrite_guide 저장\niteration++"]
+        H4C -- "force_approve" --> H4E["force_approved=true"]
+        H4D --> H4F["hitl_feedbacks INSERT"]
+        H4E --> H4F
+    end
+
+    HITL4 -- "guide / timeout" --> QUESTION
+    HITL4 -- "force_approve" --> OUTPUT
 
     subgraph OUTPUT["💾 output_node — 최종 저장"]
         O1["generated_reports INSERT\n(md/pdf/ppt 경로, quality_score)"] --> O2
@@ -362,16 +455,21 @@ flowchart TD
 
     OUTPUT --> END([⏹ END\n보고서 생성 완료])
 
-    style BRANCH fill:#fff3cd,stroke:#ffc107
+    style HITL1 fill:#fff3cd,stroke:#ffc107
+    style HITL2 fill:#fff3cd,stroke:#ffc107
+    style HITL3 fill:#d1e7dd,stroke:#198754
+    style HITL4 fill:#f8d7da,stroke:#dc3545
+    style BRANCH fill:#e2e3e5,stroke:#6c757d
     style EVALUATE fill:#f8d7da,stroke:#dc3545
     style OUTPUT fill:#d1e7dd,stroke:#198754
     style START fill:#cfe2ff,stroke:#0d6efd
     style END fill:#cfe2ff,stroke:#0d6efd
+    style ENDEARLY fill:#e2e3e5,stroke:#6c757d
 ```
 
 ---
 
-## 6. LangGraph 상태(State) 전이 상세
+## 6. LangGraph 상태(State) 전이 상세 (HITL 필드 포함)
 
 ```mermaid
 flowchart LR
@@ -387,18 +485,26 @@ flowchart LR
         ST8["report_draft: str"]
         ST9["quality_score: float"]
         ST10["iteration: int\n(최대 3)"]
-        ST11["status: str\nrunning/completed/failed"]
+        ST11["status: str\nrunning/completed/failed/skipped"]
+        ST12["hitl_mode: str\nFULL-AUTO/SEMI-AUTO/FULL-REVIEW"]
+        ST13["human_q_feedback: dict|None\n(action, revised_questions)"]
+        ST14["human_draft_feedback: dict|None\n(action, revised_draft, guide)"]
+        ST15["rewrite_guide: str|None\n(HITL-4 방향 가이드)"]
+        ST16["force_approved: bool\n(품질 미달 강제 승인)"]
     end
 
     subgraph Mutations["🔄 노드별 State 변경"]
         direction TB
         M1["collect_node\n→ collected_docs 채움"]
         M2["analyze_node\n→ analysis_notes 채움"]
-        M3["question_node\n→ generated_questions 채움"]
-        M4["search_node\n→ search_results 추가\n→ collected_docs 확장"]
-        M5["synthesize_node\n→ report_draft 채움"]
-        M6["evaluate_node\n→ quality_score 산정\n→ iteration 증가"]
-        M7["output_node\n→ status = completed"]
+        M3["question_node\n→ generated_questions 채움\n→ rewrite_guide 소비"]
+        M4["hitl_q_node\n→ human_q_feedback 수신\n→ generated_questions 업데이트"]
+        M5["search_node\n→ search_results 추가\n→ collected_docs 확장"]
+        M6["synthesize_node\n→ report_draft 채움"]
+        M7["hitl_draft_node\n→ human_draft_feedback 수신\n→ report_draft 수정 or rewrite_guide 저장"]
+        M8["evaluate_node\n→ quality_score 산정\n→ iteration 증가"]
+        M9["hitl_guide_node\n→ rewrite_guide 저장\n→ force_approved 설정"]
+        M10["output_node\n→ status = completed"]
     end
 
     State -.-> Mutations
@@ -457,13 +563,15 @@ gantt
     section RAG 색인
     ChromaDB 신규 색인       :index, after collect4, 10m
 
-    section AI 분석 (종목별)
+    section AI 분석 + HITL (종목별)
     종목 1 LangGraph 실행    :agent1, after index, 20m
-    종목 2 LangGraph 실행    :agent2, after index, 20m
-    종목 3 LangGraph 실행    :agent3, after index, 20m
+    ⛔ HITL-1 질문 검토 대기  :crit, hitl1, after agent1, 30m
+    종목 1 검색+초안 작성     :agent1b, after hitl1, 15m
+    ⛔ HITL-2 초안 검토 대기  :crit, hitl2, after agent1b, 120m
+    종목 1 평가+승인         :agent1c, after hitl2, 10m
 
     section 보고서 생성
-    MD 보고서 생성           :report1, after agent1, 5m
+    MD 보고서 생성           :report1, after agent1c, 5m
     PDF 변환                 :report2, after report1, 3m
     PPT 생성                 :report3, after report2, 5m
 ```

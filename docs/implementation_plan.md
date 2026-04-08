@@ -1,7 +1,7 @@
 # 구현 상세 계획 및 전략
 
 **작성일:** 2026-04-08  
-**버전:** 1.0
+**버전:** 1.1 (HITL 추가)
 
 ---
 
@@ -12,16 +12,17 @@
 - **기존 코드 재활용:** `naver_research_downloader.py`를 Phase 1의 기반으로 활용
 - **로컬 우선:** 외부 API 의존 최소화, 로컬 LLM(Qwen)과 로컬 DB 중심 설계
 - **모듈 독립성:** 각 수집기가 독립 실행 가능하게 설계하여 장애 격리
+- **Human in the Loop:** 자동화 효율성은 유지하면서 질문 검토·초안 편집·최종 승인 3개 지점에 사람 개입 허용
 
 ### 구현 단계 개요
 
 ```
-Phase 1: 기반 인프라       (DB + 설정 + 공통 유틸)
-Phase 2: 데이터 수집기     (5개 소스별 수집 모듈)
-Phase 3: RAG 파이프라인    (ChromaDB 색인 + 검색)
-Phase 4: LangGraph 에이전트 (워크플로우 + 자율 질문)
-Phase 5: 보고서 생성기     (Report MD/PDF + PPT)
-Phase 6: 스케줄러          (일괄 자동화)
+Phase 1: 기반 인프라        (DB + 설정 + 공통 유틸)
+Phase 2: 데이터 수집기      (5개 소스별 수집 모듈)
+Phase 3: RAG 파이프라인     (ChromaDB 색인 + 검색)
+Phase 4: LangGraph 에이전트 (워크플로우 + 자율 질문 + HITL)
+Phase 5: 보고서 생성기      (Report MD/PDF + PPT)
+Phase 6: 스케줄러           (일괄 자동화)
 ```
 
 ---
@@ -63,8 +64,10 @@ a_0408_report/
 │   │   ├── analyst.py           # 문서 분석 노드
 │   │   ├── questioner.py        # 자율 질문 생성 노드
 │   │   ├── searcher.py          # 웹 검색 실행 노드
-│   │   └── evaluator.py         # 품질 평가 및 루프 판단 노드
-│   └── state.py                 # LangGraph 상태 스키마
+│   │   ├── evaluator.py         # 품질 평가 및 루프 판단 노드
+│   │   └── hitl.py              # HITL interrupt 노드 (질문검토·초안검토·최종승인·재작성지시)
+│   ├── state.py                 # LangGraph 상태 스키마
+│   └── notifier.py              # HITL 알림 발송 (Telegram / CLI)
 │
 ├── reporters/                   # Phase 5 — 보고서 생성
 │   ├── markdown_writer.py       # 분석 보고서 Markdown 생성
@@ -114,6 +117,13 @@ a_0408_report/
   - 품질 점수 임계값 (기본 0.7)
   - 최대 반복 횟수 (기본 3)
   - 관심종목 최대 수 (기본 10개)
+
+  [HITL 설정]
+  - HITL_MODE: str = "SEMI-AUTO"      # FULL-AUTO / SEMI-AUTO / FULL-REVIEW
+  - HITL_TIMEOUT_Q: int = 30          # 질문 검토 타임아웃 (분)
+  - HITL_TIMEOUT_DRAFT: int = 120     # 초안 검토 타임아웃 (분)
+  - HITL_TIMEOUT_FINAL: int = 240     # 최종 승인 타임아웃 (분)
+  - HITL_NOTIFY_METHOD: str = "telegram"  # telegram / cli / none
 ```
 
 #### 1-2. DB 초기화
@@ -124,12 +134,13 @@ a_0408_report/
 생성 테이블: stocks, analyst_reports, analyst_opinions,
             financial_metrics, dart_disclosures, news_articles,
             analysis_sessions, web_search_results,
-            generated_reports, report_sources
+            generated_reports, report_sources,
+            hitl_feedbacks                        ← HITL 추가
 ```
 
 #### 검증 포인트
 - `data/stock_analysis.db` 파일 생성 확인
-- 10개 테이블 존재 확인
+- 11개 테이블 존재 확인 (hitl_feedbacks 포함)
 - FK 제약 정상 동작 확인
 
 ---
@@ -314,33 +325,90 @@ LangGraph State 구성:
   - quality_score: float
   - iteration: int
   - status: str                   # running / completed / failed
+
+  [HITL 추가 필드]
+  - hitl_mode: str                # FULL-AUTO / SEMI-AUTO / FULL-REVIEW
+  - human_q_feedback: dict|None   # 질문 검토 피드백 (action, revised_questions)
+  - human_draft_feedback: dict|None  # 초안 검토 피드백 (action, revised_draft, guide)
+  - rewrite_guide: str|None       # HITL-4 재작성 방향 가이드
+  - force_approved: bool          # 품질 미달 강제 승인 여부
 ```
 
 #### 4-2. `agents/graph.py` — LangGraph 워크플로우
 
 ```
-노드 구성 및 실행 순서:
+노드 구성 및 실행 순서 (HITL 포함):
 
 [START]
   ↓
-[collect_node]     : RAG로 초기 문서 수집 (analyst_reports + dart + news)
+[collect_node]       : RAG로 초기 문서 수집
   ↓
-[analyze_node]     : 수집 문서 종합 → analysis_notes 생성
+[analyze_node]       : 수집 문서 종합 → analysis_notes 생성
   ↓
-[question_node]    : 분석 공백 탐지 → 자율 질문 3~5개 생성
+[question_node]      : 분석 공백 탐지 → 자율 질문 3~5개 생성
   ↓
-[search_node]      : 질문별 웹 검색 → web_search_results 적재 + ChromaDB 색인
+⛔ [hitl_q_node]     : HITL-1 — 질문 검토 (30분 타임아웃)
+    approve  → 원래 질문 유지
+    edit     → 수정된 질문으로 교체
+    add      → 질문 추가
+    skip     → 해당 종목 분석 중단 → [END]
   ↓
-[synthesize_node]  : 전체 문서 + 검색 결과 통합 → report_draft 작성
+[search_node]        : 질문별 웹 검색 → web_search_results 적재
   ↓
-[evaluate_node]    : 보고서 품질 평가 → quality_score 산정
+[synthesize_node]    : 전체 문서 통합 → report_draft 작성
+  ↓
+⛔ [hitl_draft_node] : HITL-2 — 초안 검토 (2시간 타임아웃)
+    approve  → evaluate_node로 진행
+    edit     → 수정된 초안으로 교체 후 진행
+    rewrite  → rewrite_guide 저장 후 question_node 재진입
+  ↓
+[evaluate_node]      : 보고서 품질 평가 → quality_score 산정
   ↓
 [조건 분기]
-  quality_score >= 0.7 or iteration >= 3
-    → YES → [output_node] → [END]
-    → NO  → iteration++ → [question_node] (루프)
+  quality_score >= 0.7 or force_approved
+    → ⛔ [hitl_final_node] : HITL-3 — 최종 승인 (4시간 타임아웃)
+         approve → [output_node] → [END]
+         reject  → [hitl_draft_node] 재진입
+  quality_score < 0.7 and iteration < 3
+    → ⛔ [hitl_guide_node] : HITL-4 — 재작성 지시 (1시간 타임아웃)
+         guide입력 or timeout → iteration++ → [question_node] (루프)
+         force_approve → [output_node] → [END]
 
-조건 분기 구현: LangGraph의 conditional_edges 사용
+HITL_MODE = FULL-AUTO : 모든 interrupt 노드 스킵 (자동 approve)
+HITL_MODE = SEMI-AUTO : HITL-1, HITL-2만 활성화
+HITL_MODE = FULL-REVIEW : 모든 interrupt 노드 활성화, 타임아웃 없음
+
+조건 분기 구현: LangGraph의 conditional_edges + interrupt()
+```
+
+#### 4-3a. `agents/nodes/hitl.py` — HITL 노드 상세
+
+```
+hitl_q_node (HITL-1):
+  1. Telegram / CLI로 생성된 질문 목록 발송
+  2. interrupt() 호출 → 그래프 일시 중단
+  3. 사람 입력 수신: {action, revised_questions}
+  4. state.generated_questions 업데이트
+  5. hitl_feedbacks 테이블 INSERT
+
+hitl_draft_node (HITL-2):
+  1. Telegram / CLI로 보고서 초안 요약 발송 (링크 포함)
+  2. interrupt() 호출
+  3. 사람 입력 수신: {action, revised_draft or guide}
+  4. action='rewrite' 시 state.rewrite_guide 저장 → question_node 복귀
+  5. hitl_feedbacks INSERT
+
+hitl_final_node (HITL-3):
+  1. 최종 승인 요청 알림 발송
+  2. interrupt() 호출
+  3. 사람 입력: approve / reject
+  4. hitl_feedbacks INSERT
+
+hitl_guide_node (HITL-4):
+  1. 품질 미달 알림 + 현재 quality_score 발송
+  2. interrupt() 호출 (타임아웃: 1시간)
+  3. 사람 입력: guide 텍스트 or force_approve or 중단
+  4. hitl_feedbacks INSERT
 ```
 
 #### 4-3. 각 노드 상세 로직
@@ -569,6 +637,11 @@ Step 5. 로그 기록
 - [ ] `web_search_results` 테이블에 검색 결과 적재 확인
 - [ ] quality_score < 0.7 시 루프 재진입 동작 확인
 - [ ] iteration >= 3 시 강제 종료 동작 확인
+- [ ] HITL-1 질문 수정 피드백이 state.generated_questions에 반영 확인
+- [ ] HITL-2 rewrite 피드백이 question_node 재진입으로 이어지는지 확인
+- [ ] FULL-AUTO 모드에서 interrupt 없이 end-to-end 완주 확인
+- [ ] `hitl_feedbacks` 테이블에 각 HITL 지점 기록 확인
+- [ ] 타임아웃 초과 시 자동 진행 동작 확인
 
 ### Phase 5 완료 기준
 - [ ] `reports/YYYY-MM-DD/` 디렉터리에 .md 파일 생성 확인
