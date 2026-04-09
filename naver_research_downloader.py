@@ -95,13 +95,14 @@ def safe_filename(text: str) -> str:
     return "".join(c if (c.isalnum() or c in keep) else "_" for c in text).strip()
 
 
-def run(today_only: bool = True, max_pages: int = 5):
+def run(today_only: bool = True, max_pages: int = 5, start_page: int = 1):
     """
     메인 실행 함수
 
     Args:
-        today_only: True면 오늘 날짜 리포트만 다운로드
-        max_pages:  최대 페이지 수 (오늘 것만 받을 땐 보통 1~2페이지)
+        today_only:  True면 오늘 날짜 리포트만 다운로드
+        max_pages:   마지막 페이지 번호
+        start_page:  시작 페이지 번호 (기본 1)
     """
     SAVE_DIR.mkdir(parents=True, exist_ok=True)
     print(f"저장 경로: {SAVE_DIR.resolve()}")
@@ -110,7 +111,7 @@ def run(today_only: bool = True, max_pages: int = 5):
     skipped    = 0
     seen_urls: set[str] = set()
 
-    for page in range(1, max_pages + 1):
+    for page in range(start_page, max_pages + 1):
         print(f"\n[페이지 {page}] 목록 조회 중...")
         reports = fetch_report_list(page)
 
@@ -159,4 +160,4 @@ def run(today_only: bool = True, max_pages: int = 5):
 
 
 if __name__ == "__main__":
-    run(today_only=False, max_pages=150)
+    run(today_only=False, start_page=151, max_pages=250)
