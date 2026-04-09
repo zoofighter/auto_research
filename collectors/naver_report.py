@@ -123,4 +123,4 @@ def collect(today_only: bool = True, max_pages: int = 5, download: bool = True) 
 
 
 if __name__ == "__main__":
-    collect(today_only=False, max_pages=150)
+    collect(today_only=False, max_pages=200)

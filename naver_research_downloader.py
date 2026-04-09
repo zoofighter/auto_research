@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 
 BASE_URL = "https://finance.naver.com"
 LIST_URL = "https://finance.naver.com/research/company_list.naver"
-SAVE_DIR = Path("reports") / str(date.today())
+SAVE_DIR = Path("/Users/boon/report")
 
 HEADERS = {
     "User-Agent": (
@@ -108,6 +108,7 @@ def run(today_only: bool = True, max_pages: int = 5):
 
     downloaded = 0
     skipped    = 0
+    seen_urls: set[str] = set()
 
     for page in range(1, max_pages + 1):
         print(f"\n[페이지 {page}] 목록 조회 중...")
@@ -116,6 +117,13 @@ def run(today_only: bool = True, max_pages: int = 5):
         if not reports:
             print("  → 리포트 없음, 중단")
             break
+
+        # 중복 페이지 감지: Naver가 동일 페이지를 반복 반환하면 조기 종료
+        page_urls = {r["pdf_url"] for r in reports}
+        if page_urls.issubset(seen_urls):
+            print(f"  → 중복 페이지 감지 (page {page}), 수집 종료")
+            break
+        seen_urls.update(page_urls)
 
         page_has_today = False
         for r in reports:
@@ -151,4 +159,4 @@ def run(today_only: bool = True, max_pages: int = 5):
 
 
 if __name__ == "__main__":
-    run(today_only=True, max_pages=5)
+    run(today_only=False, max_pages=150)
