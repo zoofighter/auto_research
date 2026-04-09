@@ -10,6 +10,12 @@
 import os
 from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent / ".env")
+except ImportError:
+    pass
+
 # ── 경로 ──────────────────────────────────────────────────────
 BASE_DIR  = Path(__file__).parent
 DATA_DIR  = BASE_DIR / "data"
