@@ -134,18 +134,16 @@ def index_news_articles(session) -> int:
     collection = get_collection("news_articles")
     count = 0
 
-    records = (
-        session.query(NewsArticle)
-        .filter(NewsArticle.summary.isnot(None))
-        .all()
-    )
+    records = session.query(NewsArticle).all()
     existing_ids = set(collection.get(include=[])["ids"])
 
     for rec in records:
         doc_id = f"news_{rec.id}"
         if doc_id in existing_ids:
             continue
-        text = f"{rec.headline}\n\n{rec.summary}"
+        text = rec.headline
+        if rec.summary:
+            text = f"{rec.headline}\n\n{rec.summary}"
         try:
             embeddings = _embed_texts([text])
             collection.upsert(
