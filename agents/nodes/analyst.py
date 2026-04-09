@@ -105,14 +105,15 @@ def analyze_node(state: StockState) -> dict:
     stock_id = state["stock_id"]
 
     # RAG 검색 — 다각도 쿼리로 리포트 활용 극대화
-    from vector_db.retriever import search_by_text
+    # 액면분할(2025-11) 이후 리포트만 사용 — 이전 목표주가는 현 주가와 단위 불일치
+    from vector_db.retriever import search_by_text, ANALYST_REPORT_MIN_DATE
     queries = [
         f"{company_name} 목표주가 투자의견",
         f"{company_name} 실적 매출 영업이익",
         f"{company_name} 리스크 위험 우려",
         f"{company_name} 사업전망 성장동력",
     ]
-    docs = search_by_text(queries, stock_id=stock_id)
+    docs = search_by_text(queries, stock_id=stock_id, min_report_date=ANALYST_REPORT_MIN_DATE)
 
     # 주가 이상 감지
     price_ctx = _build_price_context(stock_id)

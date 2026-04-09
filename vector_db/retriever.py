@@ -14,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from vector_db.chroma_client import get_collection, get_embedding_function, COLLECTION_NAMES
 
 DEFAULT_TOP_K = 5
+# 삼성전자 50:1 액면분할 이후 날짜 — 이전 리포트 목표주가는 현 주가와 단위가 다름
+ANALYST_REPORT_MIN_DATE = "2025-11-01"
 
 
 def search(
@@ -21,6 +23,7 @@ def search(
     stock_id: Optional[int] = None,
     top_k: int = DEFAULT_TOP_K,
     collections: list[str] = None,
+    min_report_date: Optional[str] = None,
 ) -> list[dict]:
     """
     ChromaDB 의미론적 검색.
@@ -48,7 +51,19 @@ def search(
         if col.count() == 0:
             continue
 
-        where = {"stock_code": str(stock_id)} if stock_id is not None else None
+        # where 조건 조합
+        conditions = []
+        if stock_id is not None:
+            conditions.append({"stock_code": {"$eq": str(stock_id)}})
+        if min_report_date and col_name == "analyst_reports":
+            conditions.append({"report_date": {"$gte": min_report_date}})
+
+        if len(conditions) == 0:
+            where = None
+        elif len(conditions) == 1:
+            where = conditions[0]
+        else:
+            where = {"$and": conditions}
 
         try:
             res = col.query(
@@ -87,12 +102,16 @@ def search(
     return results[:top_k * len(target_collections)]
 
 
-def search_by_text(texts: list[str], stock_id: Optional[int] = None) -> list[dict]:
+def search_by_text(
+    texts: list[str],
+    stock_id: Optional[int] = None,
+    min_report_date: Optional[str] = None,
+) -> list[dict]:
     """여러 질문을 순서대로 검색하여 결과를 합산한다 (question_node용)."""
     all_results = []
     seen_ids = set()
     for text in texts:
-        for r in search(text, stock_id=stock_id):
+        for r in search(text, stock_id=stock_id, min_report_date=min_report_date):
             key = (r["source_type"], r["source_id"])
             if key not in seen_ids:
                 seen_ids.add(key)

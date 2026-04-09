@@ -14,7 +14,7 @@ from langchain_community.tools import DuckDuckGoSearchRun
 from agents.state.stock_state import StockState
 from db.base import SessionLocal
 from db.models.analysis import WebSearchResult
-from vector_db.retriever import search_by_text
+from vector_db.retriever import search_by_text, ANALYST_REPORT_MIN_DATE
 
 _search_tool = None
 
@@ -39,7 +39,7 @@ def search_node(state: StockState) -> dict:
 
     # ── 질문 기반 RAG 재검색 (애널리스트 리포트 추가 발굴) ──────
     if questions and stock_id:
-        rag_docs = search_by_text(questions[:5], stock_id=stock_id)
+        rag_docs = search_by_text(questions[:5], stock_id=stock_id, min_report_date=ANALYST_REPORT_MIN_DATE)
         existing_contents = {d["content"][:100] for d in new_docs}
         for d in rag_docs:
             if d["content"][:100] not in existing_contents:
