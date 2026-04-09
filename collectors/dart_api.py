@@ -57,11 +57,11 @@ def _fetch_summary(api_key: str, rcept_no: str) -> Optional[str]:
         )
         resp.raise_for_status()
         with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-            # .htm 또는 .html 파일 중 가장 큰 것 선택 (본문)
-            htm_files = [f for f in zf.namelist() if f.lower().endswith((".htm", ".html"))]
-            if not htm_files:
+            # .htm/.html/.xml 중 가장 큰 파일을 본문으로 선택
+            candidates = [f for f in zf.namelist() if f.lower().endswith((".htm", ".html", ".xml"))]
+            if not candidates:
                 return None
-            main_file = max(htm_files, key=lambda f: zf.getinfo(f).file_size)
+            main_file = max(candidates, key=lambda f: zf.getinfo(f).file_size)
             raw = zf.read(main_file)
             # 인코딩 감지
             for enc in ("utf-8", "euc-kr", "cp949"):
