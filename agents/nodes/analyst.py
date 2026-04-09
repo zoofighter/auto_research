@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -103,6 +104,8 @@ def analyze_node(state: StockState) -> dict:
     stock_code = state["stock_code"]
     company_name = state["company_name"]
     stock_id = state["stock_id"]
+    _t0 = time.time()
+    print(f"[analyze] 시작 — {company_name}({stock_code})")
 
     # RAG 검색 — 다각도 쿼리로 리포트 활용 극대화
     # 액면분할(2025-11) 이후 리포트만 사용 — 이전 목표주가는 현 주가와 단위 불일치
@@ -149,11 +152,14 @@ def analyze_node(state: StockState) -> dict:
         f"4. 추가 확인이 필요한 불확실 사항"
     )
 
+    print(f"[analyze] RAG {len(docs)}건 수집, LLM 분석 메모 생성 중... ({time.time()-_t0:.1f}s)")
+    _t1 = time.time()
     try:
         llm = _get_llm()
         analysis_notes = llm.invoke(prompt)
     except Exception as e:
         analysis_notes = f"[LLM 오류: {e}] 기본 분석 불가"
+    print(f"[analyze] 완료 — 이상 이벤트 {len([l for l in price_ctx.splitlines() if l])}건 ({time.time()-_t1:.1f}s / 누적 {time.time()-_t0:.1f}s)")
 
     return {
         "session_id": session_id,

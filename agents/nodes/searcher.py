@@ -5,6 +5,7 @@ search_node — 생성된 질문으로 웹 검색을 수행하고 결과를 DB +
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -32,6 +33,8 @@ def search_node(state: StockState) -> dict:
     session_id = state.get("session_id")
     company_name = state["company_name"]
     stock_id = state.get("stock_id")
+    _t0 = time.time()
+    print(f"[search] 웹 검색 + RAG 재검색 시작 ({len(questions)}개 질문)")
 
     search_results = []
     new_docs = list(state.get("collected_docs", []))  # 기존 docs 유지
@@ -84,6 +87,7 @@ def search_node(state: StockState) -> dict:
                 })
 
         db_session.commit()
+        print(f"[search] 완료 — 웹 {len(search_results)}건, 총 docs {len(new_docs)}건 ({time.time()-_t0:.1f}s)")
     except Exception:
         db_session.rollback()
         raise

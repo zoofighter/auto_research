@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -38,6 +39,8 @@ def evaluate_node(state: StockState) -> dict:
     """보고서 초안을 4개 항목으로 평가하여 quality_score를 산정한다."""
     report_draft = state.get("report_draft", "")
     iteration = state.get("iteration", 0)
+    _t0 = time.time()
+    print(f"[evaluate] 품질 평가 중... (iteration={iteration+1})")
 
     prompt = (
         f"아래 보고서를 4개 항목으로 평가하라.\n"
@@ -70,9 +73,10 @@ def evaluate_node(state: StockState) -> dict:
                 s3 = min(float(nums[2]), 0.2)
                 s4 = min(float(nums[3]), 0.2)
         quality_score = round(min(s1 + s2 + s3 + s4, 1.0), 3)
-        print(f"[evaluator] 근거={s1} 균형={s2} 구체={s3} 논리={s4} → {quality_score}")
+        print(f"[evaluate] 근거={s1} 균형={s2} 구체={s3} 논리={s4} → {quality_score} ({time.time()-_t0:.1f}s)")
     except Exception:
         quality_score = 0.5  # LLM 실패 시 중간값
+        print(f"[evaluate] LLM 실패, 기본값 {quality_score} ({time.time()-_t0:.1f}s)")
 
     return {
         "quality_score": quality_score,

@@ -5,6 +5,7 @@ synthesize_node — 수집 문서 전체를 통합하여 report_type별 보고�
 from __future__ import annotations
 
 import sys
+import time
 from datetime import date
 from pathlib import Path
 
@@ -145,6 +146,8 @@ def synthesize_node(state: StockState) -> dict:
     if report_type == "price_report" and stock_id:
         ohlcv_text = _build_ohlcv_context(stock_id)
 
+    _t0 = time.time()
+    print(f"[synthesize] 보고서 초안 작성 중... (report_type={report_type}, docs={len(collected_docs)}건)")
     today_str = date.today().isoformat()  # e.g. 2026-04-09
 
     # 컨텍스트 조합 — 애널리스트 리포트 우선 정렬, 최대 15개, 각 500자
@@ -189,5 +192,6 @@ def synthesize_node(state: StockState) -> dict:
         report_draft = llm.invoke(prompt)
     except Exception as e:
         report_draft = f"## {company_name} 분석 보고서\n\n[초안 생성 오류: {e}]"
+    print(f"[synthesize] 완료 — {len(report_draft)}자 ({time.time()-_t0:.1f}s)")
 
     return {"report_draft": report_draft}

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -39,6 +40,8 @@ def question_node(state: StockState) -> dict:
     """분석 메모를 바탕으로 자율 질문 3~5개를 생성한다."""
     company_name = state["company_name"]
     stock_code = state["stock_code"]
+    _t0 = time.time()
+    print(f"[question] 질문 생성 중...")
     analysis_notes = state.get("analysis_notes", "")
     price_context = state.get("price_context", "")
     rewrite_guide = state.get("rewrite_guide")
@@ -67,6 +70,10 @@ def question_node(state: StockState) -> dict:
     except Exception as e:
         questions = [f"{company_name} 최근 실적 전망은?",
                      f"{company_name} 주요 리스크 요인은?"]
+
+    print(f"[question] 완료 — {len(questions)}개 생성 ({time.time()-_t0:.1f}s)")
+    for i, q in enumerate(questions, 1):
+        print(f"  {i}. {q}")
 
     return {
         "generated_questions": questions,
