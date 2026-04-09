@@ -15,7 +15,7 @@ from db.models.stock import Stock
 from db.models.report import AnalystReport
 from naver_research_downloader import fetch_report_list, download_pdf, safe_filename, is_today
 
-SAVE_DIR = Path("data") / "pdfs"
+SAVE_DIR = Path("/Users/boon/report")
 
 
 def _parse_date(date_str: str) -> date:
@@ -52,10 +52,18 @@ def collect(today_only: bool = True, max_pages: int = 5, download: bool = True) 
     inserted = []
 
     try:
+        seen_urls: set[str] = set()
         for page in range(1, max_pages + 1):
             reports = fetch_report_list(page)
             if not reports:
                 break
+
+            # 중복 페이지 감지: Naver가 동일 페이지를 반복 반환할 때 조기 종료
+            page_urls = {r["pdf_url"] for r in reports}
+            if page_urls.issubset(seen_urls):
+                print(f"[naver_report] page {page}: 중복 페이지 감지, 수집 종료")
+                break
+            seen_urls.update(page_urls)
 
             page_has_target = False
             for r in reports:
@@ -115,4 +123,4 @@ def collect(today_only: bool = True, max_pages: int = 5, download: bool = True) 
 
 
 if __name__ == "__main__":
-    collect(today_only=True, max_pages=3)
+    collect(today_only=False, max_pages=150)
