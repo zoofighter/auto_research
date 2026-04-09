@@ -31,7 +31,7 @@ REPORT_DIR.mkdir(exist_ok=True)
 
 # ── LLM / 임베딩 ───────────────────────────────────────────────
 OLLAMA_BASE_URL  = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL     = os.environ.get("OLLAMA_MODEL", "qwen3:1.7b")
+OLLAMA_MODEL     = os.environ.get("OLLAMA_MODEL", "exaone3.5:32b")
 EMBED_MODEL      = os.environ.get("EMBED_MODEL", "rjmalagon/gte-qwen2-1.5b-instruct-embed-f16:latest")
 
 # ── 외부 API ──────────────────────────────────────────────────

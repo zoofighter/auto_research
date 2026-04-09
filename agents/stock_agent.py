@@ -22,6 +22,7 @@ from agents.nodes.evaluator import evaluate_node, should_loop
 from agents.nodes.hitl import hitl_q_node, hitl_draft_node, hitl_guide_node
 from db.base import SessionLocal
 from db.models.analysis import AnalysisSession
+from reporters.markdown_writer import write_report
 
 
 def complete_node(state: StockState) -> dict:
@@ -45,6 +46,21 @@ def complete_node(state: StockState) -> dict:
         db.rollback()
     finally:
         db.close()
+
+    # 보고서 파일 저장
+    draft = state.get("report_draft", "")
+    if draft:
+        try:
+            path = write_report(
+                result={
+                    "stock_code": state.get("stock_code", "unknown"),
+                    "report_draft": draft,
+                },
+                report_type=state.get("report_type", "daily_brief"),
+            )
+            print(f"[complete_node] 보고서 저장: {path}")
+        except Exception as e:
+            print(f"[complete_node] 보고서 저장 실패: {e}")
 
     return {
         "status": state.get("status", "completed"),

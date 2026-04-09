@@ -47,7 +47,7 @@ initial_state = {
     "hitl_mode": "FULL-AUTO",
     "force_approved": False,
     "rewrite_guide": None,
-    "report_type": "daily_brief",
+    "report_type": "price_report",
 }
 
 print("StockAgent 실행 중...")

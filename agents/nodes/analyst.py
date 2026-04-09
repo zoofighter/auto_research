@@ -104,13 +104,15 @@ def analyze_node(state: StockState) -> dict:
     company_name = state["company_name"]
     stock_id = state["stock_id"]
 
-    # RAG 검색 — 리포트, 공시, 뉴스
-    docs = search(
-        query=f"{company_name} 실적 투자의견 리스크",
-        stock_id=stock_id,
-        top_k=5,
-        collections=["analyst_reports", "dart_disclosures", "news_articles"],
-    )
+    # RAG 검색 — 다각도 쿼리로 리포트 활용 극대화
+    from vector_db.retriever import search_by_text
+    queries = [
+        f"{company_name} 목표주가 투자의견",
+        f"{company_name} 실적 매출 영업이익",
+        f"{company_name} 리스크 위험 우려",
+        f"{company_name} 사업전망 성장동력",
+    ]
+    docs = search_by_text(queries, stock_id=stock_id)
 
     # 주가 이상 감지
     price_ctx = _build_price_context(stock_id)
@@ -126,8 +128,15 @@ def analyze_node(state: StockState) -> dict:
     finally:
         session.close()
 
-    # LLM 분석 메모
-    doc_texts = "\n\n".join(d["content"][:400] for d in docs[:5])
+    # LLM 분석 메모 — 애널리스트 리포트 우선, 최대 12개 문서, 각 600자
+    docs_sorted = sorted(docs, key=lambda x: (
+        0 if x["source_type"] == "analyst_report" else 1,
+        -x.get("score", 0)
+    ))
+    doc_texts = "\n\n".join(
+        f"[{d['source_type']}] {d['content'][:600]}"
+        for d in docs_sorted[:12]
+    )
     prompt = (
         f"종목: {company_name}({stock_code})\n\n"
         f"[수집 문서 요약]\n{doc_texts}\n\n"

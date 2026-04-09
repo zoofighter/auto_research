@@ -40,13 +40,18 @@ def evaluate_node(state: StockState) -> dict:
     iteration = state.get("iteration", 0)
 
     prompt = (
-        f"다음 보고서를 4개 항목으로 평가하라. 각 항목은 최대 점수를 초과할 수 없다.\n\n"
+        f"아래 보고서를 4개 항목으로 평가하라.\n"
+        f"반드시 아래 형식 그대로, 콜론(:) 뒤에 숫자만 출력하라. 설명 금지.\n\n"
         f"[보고서]\n{report_draft[:800]}\n\n"
-        f"다음 형식으로 숫자만 출력하라:\n"
-        f"근거 충분성: <0.0~0.3>\n"
-        f"균형성: <0.0~0.3>\n"
-        f"구체성: <0.0~0.2>\n"
-        f"논리성: <0.0~0.2>"
+        f"근거 충분성: (0.0에서 0.3 사이 숫자)\n"
+        f"균형성: (0.0에서 0.3 사이 숫자)\n"
+        f"구체성: (0.0에서 0.2 사이 숫자)\n"
+        f"논리성: (0.0에서 0.2 사이 숫자)\n"
+        f"\n출력 예시:\n"
+        f"근거 충분성: 0.2\n"
+        f"균형성: 0.25\n"
+        f"구체성: 0.15\n"
+        f"논리성: 0.18"
     )
 
     try:
@@ -56,7 +61,16 @@ def evaluate_node(state: StockState) -> dict:
         s2 = _parse_score(raw, "균형성")
         s3 = _parse_score(raw, "구체성")
         s4 = _parse_score(raw, "논리성")
+        # 파싱 결과가 모두 기본값(0.1)이면 LLM 응답 재파싱 시도
+        if s1 == s2 == s3 == s4 == 0.1:
+            nums = re.findall(r"0\.[0-9]+", raw)
+            if len(nums) >= 4:
+                s1 = min(float(nums[0]), 0.3)
+                s2 = min(float(nums[1]), 0.3)
+                s3 = min(float(nums[2]), 0.2)
+                s4 = min(float(nums[3]), 0.2)
         quality_score = round(min(s1 + s2 + s3 + s4, 1.0), 3)
+        print(f"[evaluator] 근거={s1} 균형={s2} 구체={s3} 논리={s4} → {quality_score}")
     except Exception:
         quality_score = 0.5  # LLM 실패 시 중간값
 

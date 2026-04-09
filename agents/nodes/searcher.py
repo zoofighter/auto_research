@@ -14,6 +14,7 @@ from langchain_community.tools import DuckDuckGoSearchRun
 from agents.state.stock_state import StockState
 from db.base import SessionLocal
 from db.models.analysis import WebSearchResult
+from vector_db.retriever import search_by_text
 
 _search_tool = None
 
@@ -26,14 +27,24 @@ def _get_search_tool() -> DuckDuckGoSearchRun:
 
 
 def search_node(state: StockState) -> dict:
-    """생성된 질문으로 웹 검색 후 결과를 DB 저장 + collected_docs 추가."""
+    """생성된 질문으로 RAG 재검색 + 웹 검색 후 결과를 DB 저장 + collected_docs 추가."""
     questions = state.get("generated_questions", [])
     session_id = state.get("session_id")
     company_name = state["company_name"]
+    stock_id = state.get("stock_id")
 
     search_results = []
-    new_docs = []
+    new_docs = list(state.get("collected_docs", []))  # 기존 docs 유지
     db_session = SessionLocal()
+
+    # ── 질문 기반 RAG 재검색 (애널리스트 리포트 추가 발굴) ──────
+    if questions and stock_id:
+        rag_docs = search_by_text(questions[:5], stock_id=stock_id)
+        existing_contents = {d["content"][:100] for d in new_docs}
+        for d in rag_docs:
+            if d["content"][:100] not in existing_contents:
+                new_docs.append(d)
+                existing_contents.add(d["content"][:100])
 
     try:
         tool = _get_search_tool()
@@ -81,5 +92,5 @@ def search_node(state: StockState) -> dict:
 
     return {
         "search_results": search_results,
-        "collected_docs": state.get("collected_docs", []) + new_docs,
+        "collected_docs": new_docs,
     }
