@@ -35,14 +35,15 @@ def _get_or_create_stock(session, company_name: str) -> Stock:
     return stock
 
 
-def collect(today_only: bool = True, max_pages: int = 5, download: bool = True) -> list[dict]:
+def collect(today_only: bool = True, max_pages: int = 5, download: bool = True, start_page: int = 1) -> list[dict]:
     """
     리포트 목록을 수집하여 analyst_reports 테이블에 적재한다.
 
     Args:
-        today_only: True면 오늘 날짜 리포트만 수집
-        max_pages:  최대 페이지 수
-        download:   True면 PDF 파일도 로컬 저장
+        today_only:  True면 오늘 날짜 리포트만 수집
+        max_pages:   마지막 페이지 번호
+        download:    True면 PDF 파일도 로컬 저장
+        start_page:  시작 페이지 번호 (기본 1)
 
     Returns:
         삽입된 레코드 정보 목록
@@ -53,7 +54,7 @@ def collect(today_only: bool = True, max_pages: int = 5, download: bool = True) 
 
     try:
         seen_urls: set[str] = set()
-        for page in range(1, max_pages + 1):
+        for page in range(start_page, max_pages + 1):
             reports = fetch_report_list(page)
             if not reports:
                 break
@@ -123,4 +124,4 @@ def collect(today_only: bool = True, max_pages: int = 5, download: bool = True) 
 
 
 if __name__ == "__main__":
-    collect(today_only=False, max_pages=200)
+    collect(today_only=False, start_page=151, max_pages=250)
