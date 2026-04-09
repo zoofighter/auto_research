@@ -17,14 +17,14 @@ except ImportError:
     pass
 
 # ── 경로 ──────────────────────────────────────────────────────
-BASE_DIR  = Path(__file__).parent
-DATA_DIR  = BASE_DIR / "data"
-DB_PATH   = DATA_DIR / "stock_analysis.db"
-CHROMA_DIR = DATA_DIR / "chroma"
-PDF_DIR   = DATA_DIR / "pdfs"
+BASE_DIR   = Path(__file__).parent
+REPORTDB_DIR = Path("/Users/boon/reportdb")
+DB_PATH    = REPORTDB_DIR / "stock_analysis.db"
+CHROMA_DIR = REPORTDB_DIR / "chroma"
+PDF_DIR    = Path("/Users/boon/report")
 REPORT_DIR = BASE_DIR / "reports"
 
-DATA_DIR.mkdir(exist_ok=True)
+REPORTDB_DIR.mkdir(parents=True, exist_ok=True)
 CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 PDF_DIR.mkdir(parents=True, exist_ok=True)
 REPORT_DIR.mkdir(exist_ok=True)
